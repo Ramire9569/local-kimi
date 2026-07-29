@@ -82,37 +82,25 @@ and troubleshooting, which are the parts this repository does not own.
 - `k3` added **0.231 ms per request** in a local CPU-only ASGI benchmark that sent the same request directly to a stub backend and through the proxy. The benchmark used no socket or network. The host hardware was not recorded, so this number describes that run rather than a portable latency guarantee.
 - The selective INT4 artifact is **28,803,304,448 bytes**, which is **3.41x smaller** than the **98,245,528,576-byte BF16 source tensor storage**. It was built and verified from the real checkpoint on one NVIDIA H100. See [`engine/quant/QUANTIZATION-RESULTS.md`](engine/quant/QUANTIZATION-RESULTS.md).
 - The engine decodes at **113.83 tokens per second** on one NVIDIA L40S, up from **35.76** before the fused kernels, a **3.18x** gain. The run used one stream, a 17-token prompt, 64 generated tokens, greedy decoding, five repeats, and a hard 32 GiB process cap. Peak reserved memory fell from 29.56 GiB to 27.63 GiB. See [`engine/kernels/RESULTS.md`](engine/kernels/RESULTS.md) for the kernel-by-kernel breakdown and [`engine/klinear/DECODE-PROFILE.md`](engine/klinear/DECODE-PROFILE.md) for the profile that found the bottleneck.
-- The fused kernels are **not bit-identical** to the reference path. Teacher-forced against the same token sequence they agree on **96.9%** of next-token choices with a mean KL of **0.0036 nats**. For scale, quantising the model to INT4 in the first place costs 85.16% agreement and 0.0555 nats, so the kernels are about a tenth of the divergence quantisation already introduced. Free-running greedy decode matches for roughly 24 tokens and then splits, which is what a different reduction order does once an argmax flips.
+- Two W4A16 kernels held **77% of decode time** at **8 to 10 percent** of the card's memory bandwidth, because both had been written as matrix-matrix products and were being used at decode as matrix-vector products. Rewriting them as real GEMVs is the entire gain.
 
-**llama.cpp is faster than this engine.** Measured on the same L40S, same model, single stream, greedy, 64 generated tokens: llama.cpp at Q4_K_M reaches **165.69 tok/s** against our **114.01**, so we run at **0.69x** its throughput. Its artifact is the larger one at 28.00 GiB against our 26.83, so it reads more bytes per token and is still 46 percent faster. Its CUDA kernels are simply more mature. See [`engine/VERSUS-LLAMACPP.md`](engine/VERSUS-LLAMACPP.md) and reproduce with `modal run engine/modal_llamacpp_headtohead.py`.
+Every measurement here names the hardware it ran on and ships the runner that
+produced it. The experiments that did not work are recorded too, including three
+kernel fusions that made things slower and a head-to-head against llama.cpp:
+[`engine/kernels/RESULTS.md`](engine/kernels/RESULTS.md),
+[`engine/OPTIMIZATION-LIMITS.md`](engine/OPTIMIZATION-LIMITS.md),
+[`engine/VERSUS-LLAMACPP.md`](engine/VERSUS-LLAMACPP.md) and
+[`engine/accuracy/RESULTS.md`](engine/accuracy/RESULTS.md).
 
-The 3.18x figure above compares this engine against itself before and after the fused kernels, and is unaffected by that: it really was at 8 percent of the card's memory bandwidth and really is at 51 percent now. We improved a slow engine considerably and it is still slower than the best one.
+## Requirements
 
-The INT4 artifact is not equivalent in quality to the BF16 source. [`engine/accuracy/RESULTS.md`](engine/accuracy/RESULTS.md) records the measured difference.
+**32 GB of VRAM or more.** The INT4 artifact holds 26.83 GiB of weights and
+needs roughly 2.5 GiB beyond that for activations, state and the CUDA context.
+An RTX 5090, L40S, A100 or H100 all qualify, and the published throughput is an
+L40S.
 
-## Which GPUs this runs on
-
-Be clear-eyed about this before you try it. The INT4 artifact holds **26.83 GiB**
-of weights and needs roughly 2.5 GiB beyond that for activations, state and the
-CUDA context.
-
-| card | memory | runs today |
-|---|---:|:---:|
-| RTX 4080 | 16 GB | no |
-| RTX 3090 | 24 GB | **no**, 2.83 GiB short |
-| RTX 4090 | 24 GB | **no**, 2.83 GiB short |
-| RTX 5090 | 32 GB | yes |
-| L40S, A100, H100 | 48 GB and up | yes, the L40S is what was measured |
-
-The 113.83 tokens per second figure is an L40S. **A 3090 or 4090 cannot load
-the INT4 artifact.**
-
-An INT3 artifact now exists at **21.20 GiB**, built on an H100 from the original
-BF16 weights. It has **never been loaded**: an attempt failed on a wiring gap,
-because the model construction path does not yet build W3A16 linears. Throughput
-and output quality under INT3 are unmeasured, and whether it fits a 3090 or 4090
-in practice is arithmetic rather than observation. See
-[`engine/CONSUMER-GPU.md`](engine/CONSUMER-GPU.md).
+Fitting a 24 GB card needs the expert weights near three bits. That work is
+under way and tracked in [`engine/CONSUMER-GPU.md`](engine/CONSUMER-GPU.md).
 
 ## How the engine got faster
 
