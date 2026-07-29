@@ -1,7 +1,9 @@
 # Decode throughput, measured, with output equivalence proved
 
-Superseded by `engine/kernels/RESULTS.md`, which records 109.71 tok/s after
-the fused kernels landed. This file describes the state before that work.
+Superseded by `engine/kernels/RESULTS.md`, which records 113.83 tok/s after
+the fused kernels landed. This file describes the state before that work and is
+kept because the equivalence claim below is the one that later turned out to be
+an artifact of a filler prompt.
 
 Produced on one NVIDIA L40S, loading the
 selective INT4 artifact with the process hard-capped at 32 GiB. 8-token prompt,

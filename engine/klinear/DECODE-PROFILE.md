@@ -80,7 +80,10 @@ They set the direction of the work, not a claim about the result.
 
 ## After the fused kernels
 
-The same profile re-run with `--kernels triton_gemv/triton_gemv`:
+The same profile re-run with `--kernels triton_gemv/triton_gemv`. This was
+taken BEFORE the grouped kernel's launch configuration was swept end to end, so
+it reads 109.12 tok/s where the shipped engine now measures 113.83. The
+breakdown is what matters here, not the headline.
 
 | | before | after |
 |---|---:|---:|

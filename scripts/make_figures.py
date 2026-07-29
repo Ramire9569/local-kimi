@@ -1,13 +1,22 @@
 """Generate the figures in docs/figures from measured numbers.
 
-Every value here is copied from a results document in this repository and the
-source is named in the caption of each figure. Nothing is estimated.
+Every value is copied from a results document in this repository and each figure
+names its source. Nothing is estimated or interpolated.
+
+Typography is Computer Modern through matplotlib's mathtext, which matches a
+LaTeX document without requiring a LaTeX installation. If a real toolchain is
+present, set USE_TEX=1 to render through it instead.
 
     uv run python scripts/make_figures.py
+
+Each figure is written twice, as PNG for the README and as PDF for inclusion in
+a paper, since the PDF keeps the text as vectors.
 """
 
 from __future__ import annotations
 
+import os
+import shutil
 import textwrap
 from pathlib import Path
 
@@ -15,153 +24,256 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
-from matplotlib.ticker import FuncFormatter  # noqa: E402
+from matplotlib.ticker import AutoMinorLocator  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "docs" / "figures"
 OUT.mkdir(parents=True, exist_ok=True)
 
-INK = "#1b1b1b"
-MUTED = "#8a8a8a"
-ACCENT = "#2f6f4e"
-BASE = "#c9c9c9"
-WARN = "#b3541e"
+# A real LaTeX run needs latex, dvipng and ghostscript on PATH. Asking for it
+# without them raises at draw time, well after the code looks correct, so the
+# check is explicit rather than a try/except wrapped around savefig.
+USE_TEX = bool(os.environ.get("USE_TEX")) and all(
+    shutil.which(binary) for binary in ("latex", "dvipng", "gs")
+)
+
+INK = "#111111"
+MUTED = "#6b6b6b"
+RULE = "#d8d8d8"
+ACCENT = "#1f4e79"
+ACCENT_LIGHT = "#7fa6c9"
+BASE = "#bfbfbf"
+WARN = "#a33b21"
 
 plt.rcParams.update(
     {
-        "figure.dpi": 200,
-        "savefig.dpi": 200,
-        "font.family": "DejaVu Sans",
+        "figure.dpi": 400,
+        "savefig.dpi": 400,
+        "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.02,
+        "text.usetex": USE_TEX,
+        "font.family": "serif",
+        "font.serif": ["cmr10", "Computer Modern Roman", "STIXGeneral", "DejaVu Serif"],
+        "mathtext.fontset": "cm",
         "font.size": 9,
-        "axes.edgecolor": MUTED,
+        # cmr10 has no U+2212, so a real minus renders as a missing-glyph box.
+        "axes.unicode_minus": False,
+        # Required alongside cmr10: without it matplotlib warns and falls back
+        # to a sans-serif tick formatter, which mixes two typefaces on one axis.
+        "axes.formatter.use_mathtext": True,
+        "axes.edgecolor": INK,
+        "axes.linewidth": 0.7,
         "axes.labelcolor": INK,
-        "axes.titlesize": 11,
-        "axes.titleweight": "bold",
-        "text.color": INK,
-        "xtick.color": MUTED,
-        "ytick.color": MUTED,
+        "axes.labelsize": 9,
+        "axes.titlesize": 10,
         "axes.spines.top": False,
         "axes.spines.right": False,
+        "text.color": INK,
+        "xtick.color": INK,
+        "ytick.color": INK,
+        "xtick.labelsize": 8.5,
+        "ytick.labelsize": 8.5,
+        "xtick.direction": "in",
+        "ytick.direction": "in",
+        "xtick.major.width": 0.7,
+        "ytick.major.width": 0.7,
+        "xtick.minor.width": 0.5,
+        "ytick.minor.width": 0.5,
+        "xtick.major.size": 3.5,
+        "ytick.major.size": 3.5,
+        "xtick.minor.size": 2.0,
+        "ytick.minor.size": 2.0,
+        "legend.fontsize": 8,
+        "legend.frameon": False,
+        "legend.handlelength": 1.6,
         "figure.facecolor": "white",
         "axes.facecolor": "white",
     }
 )
 
+PERCENT_LABEL = r"\%" if USE_TEX else "%"
 
-def _finish(ax, title: str, subtitle: str, *, width: int = 96) -> None:
-    """Title plus a wrapped subtitle.
 
-    The subtitle is wrapped before it is drawn. Left as one long line it widens
-    the saved bounding box, and with bbox_inches tight that squashes the axes
-    into a fraction of the canvas and collides the tick labels.
+def _caption(ax, label: str, title: str, body: str, *, width: int = 104) -> None:
+    """Journal-style caption: a figure label, a title, then the note.
+
+    The note is wrapped before it is drawn. Left as one long line it widens the
+    saved bounding box, and with a tight bbox that squashes the axes into a
+    fraction of the canvas and collides the tick labels.
     """
-    wrapped = "\n".join(textwrap.wrap(subtitle, width=width))
-    lines = wrapped.count("\n") + 1
-    ax.set_title(title, loc="left", pad=14 + 9 * lines)
+    lines = textwrap.wrap(body, width=width)
+    # The caption grows upward from the top of the axes, so the title has to
+    # clear its full height. Pad is in points, and a line occupies
+    # fontsize * linespacing points. Under-estimating this draws the title
+    # straight through the first line of the caption.
+    body_size, spacing = 7.6, 1.45
+    ax.set_title(
+        f"{label}  {title}",
+        loc="left",
+        fontsize=10,
+        pad=14 + body_size * spacing * len(lines),
+    )
     ax.text(
         0.0,
-        1.015,
-        wrapped,
+        1.012,
+        "\n".join(lines),
         transform=ax.transAxes,
-        fontsize=8,
+        fontsize=body_size,
         color=MUTED,
         va="bottom",
-        linespacing=1.35,
+        linespacing=spacing,
     )
 
 
-def decode_stages() -> None:
-    """Throughput after each fused kernel landed."""
-    labels = [
-        "Before\nfused kernels",
-        "KDA\nfusions",
-        "+ grouped\nW4A16 GEMV",
-        "+ dense\nW4A16 GEMV",
-    ]
-    values = [35.76, 37.98, 63.10, 113.83]
-    colors = [BASE, ACCENT, ACCENT, ACCENT]
-
-    fig, ax = plt.subplots(figsize=(7.2, 3.6))
-    bars = ax.bar(labels, values, color=colors, width=0.62)
-    for bar, value in zip(bars, values, strict=True):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            value + 2.0,
-            f"{value:.2f}",
-            ha="center",
-            fontsize=9,
-            fontweight="bold",
-        )
-    ax.set_ylabel("tokens per second")
-    ax.set_ylim(0, 132)
-    ax.grid(axis="y", color="#ededed", linewidth=0.8)
-    ax.set_axisbelow(True)
-    ax.annotate(
-        "3.18x",
-        xy=(3, 113.83),
-        xytext=(1.5, 122.0),
-        fontsize=9,
-        color=ACCENT,
-        fontweight="bold",
-        arrowprops={"arrowstyle": "->", "color": ACCENT, "lw": 1.0},
-    )
-    _finish(
-        ax,
-        "Decode throughput after each fused kernel",
-        "NVIDIA L40S, INT4 weights, single stream, greedy, 17-token prompt, 64 generated "
-        "tokens, inside a hard 32 GiB cap. The kernels are not bit-identical to the "
-        "reference: teacher forced they agree on 96.9 percent of next-token choices at "
-        "0.0036 nats mean KL, about a tenth of what INT4 quantisation itself costs. "
-        "Source: engine/kernels/RESULTS.md",
-    )
-    fig.tight_layout()
-    fig.savefig(OUT / "decode-throughput.png", bbox_inches="tight")
+def _save(fig, stem: str) -> None:
+    for suffix in ("png", "pdf"):
+        fig.savefig(OUT / f"{stem}.{suffix}")
     plt.close(fig)
 
 
-def kernel_bandwidth() -> None:
-    """The reason the speedup existed: both hot kernels were shaped wrong."""
+def _grid_y(ax, top: float) -> None:
+    ax.set_ylim(0, top)
+    ax.yaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.grid(axis="y", color=RULE, linewidth=0.5, zorder=0)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="x", which="minor", bottom=False)
+
+
+def _grid_x(ax) -> None:
+    ax.xaxis.set_minor_locator(AutoMinorLocator(2))
+    ax.grid(axis="x", color=RULE, linewidth=0.5, zorder=0)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="y", which="minor", left=False)
+
+
+def decode_throughput() -> None:
+    """Throughput after each fused kernel landed."""
     labels = [
-        "grouped W4A16\nw1 and w3",
-        "grouped W4A16\nw2",
-        "dense W4A16\nq/k/v",
-        "dense W4A16\no_proj",
+        "before fused\nkernels",
+        "KDA\nfusions",
+        "$+$ grouped\nW4A16 GEMV",
+        "$+$ dense\nW4A16 GEMV",
+    ]
+    values = [35.76, 37.98, 63.10, 113.83]
+    colors = [BASE, ACCENT_LIGHT, ACCENT, ACCENT]
+
+    fig, ax = plt.subplots(figsize=(6.6, 3.3))
+    bars = ax.bar(labels, values, color=colors, width=0.58, zorder=3)
+    # Only the final configuration was measured in more than one container, so
+    # it is the only bar with an interval. Drawing zero-length bars on the rest
+    # renders as stray dashes that read as a measurement rather than as nothing.
+    ax.errorbar(
+        [3],
+        [113.83],
+        yerr=[[113.83 - 113.77], [114.03 - 113.83]],
+        fmt="none",
+        ecolor=INK,
+        elinewidth=0.7,
+        capsize=2.5,
+        capthick=0.7,
+        zorder=4,
+    )
+    for bar, value in zip(bars, values, strict=True):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            value + 3.2,
+            f"{value:.2f}",
+            ha="center",
+            fontsize=8.5,
+            zorder=5,
+        )
+    ax.set_ylabel(r"decode throughput  /  tokens $\mathrm{s}^{-1}$")
+    _grid_y(ax, 132)
+    # Aim at the flank of the bar, not its top. Pointing at the top collides
+    # with the value label sitting directly above it.
+    ax.annotate(
+        r"$3.18\times$",
+        xy=(2.72, 100.0),
+        xytext=(1.55, 120.0),
+        fontsize=9.5,
+        color=ACCENT,
+        ha="center",
+        arrowprops={
+            "arrowstyle": "-|>",
+            "color": ACCENT,
+            "lw": 0.8,
+            "shrinkA": 3,
+            "shrinkB": 3,
+        },
+    )
+    _caption(
+        ax,
+        "Figure 1.",
+        "Decode throughput after each fused kernel.",
+        "NVIDIA L40S, selective INT4 weights, single stream, greedy, 17-token prompt, 64 "
+        "generated tokens, inside a hard 32 GiB process cap. Bars are the median of five "
+        "repeats in one container; the interval on the final bar is the range across five "
+        "independent containers, 113.77 to 114.03. The kernels are not bit-identical to the "
+        "reference path: teacher forced they agree on 96.9 percent of next-token choices at "
+        "0.0036 nats mean KL, roughly one tenth of the divergence INT4 quantisation itself "
+        "introduces. Source: engine/kernels/RESULTS.md",
+    )
+    _save(fig, "decode-throughput")
+
+
+def kernel_bandwidth() -> None:
+    """Achieved bandwidth against the roofline, before and after."""
+    labels = [
+        "grouped\n$w_1, w_3$",
+        "grouped\n$w_2$",
+        "dense\n$q, k, v$",
+        "dense\n$o$",
     ]
     before = [8.26, 10.19, 9.38, 4.06]
     after = [51.73, 51.18, 11.13, 9.81]
 
     x = range(len(labels))
-    width = 0.36
-    fig, ax = plt.subplots(figsize=(7.6, 3.8))
-    first = ax.bar([i - width / 2 for i in x], before, width, label="before", color=BASE)
-    second = ax.bar([i + width / 2 for i in x], after, width, label="after", color=ACCENT)
+    width = 0.34
+    fig, ax = plt.subplots(figsize=(6.6, 3.3))
+    first = ax.bar(
+        [i - width / 2 for i in x], before, width,
+        label="before", color=BASE, zorder=3,
+    )
+    second = ax.bar(
+        [i + width / 2 for i in x], after, width,
+        label="after", color=ACCENT, zorder=3,
+    )
     for group in (first, second):
         for bar in group:
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 1.2,
-                f"{bar.get_height():.1f}%",
+                bar.get_height() + 1.6,
+                f"{bar.get_height():.1f}",
                 ha="center",
-                fontsize=8.5,
+                fontsize=7.8,
+                zorder=5,
             )
+    ax.axhline(100, color=WARN, linestyle=(0, (4, 3)), linewidth=0.8, zorder=2)
+    ax.text(
+        len(labels) - 0.55,
+        92,
+        r"roofline, $864\ \mathrm{GB\,s^{-1}}$",
+        fontsize=7.6,
+        color=WARN,
+        ha="right",
+    )
     ax.set_xticks(list(x))
     ax.set_xticklabels(labels)
-    ax.set_ylabel("percent of L40S peak bandwidth")
-    ax.set_ylim(0, 68)
-    ax.legend(frameon=False, loc="upper right", fontsize=8.5)
-    ax.grid(axis="y", color="#ededed", linewidth=0.8)
-    ax.set_axisbelow(True)
-    _finish(
+    ax.set_ylabel(f"achieved bandwidth  /  {PERCENT_LABEL} of peak")
+    _grid_y(ax, 112)
+    ax.legend(loc="upper left", bbox_to_anchor=(0.006, 0.88))
+    _caption(
         ax,
-        "Both hot kernels were running far below the card",
-        "Each was written as a GEMM and used at decode as a GEMV: tl.dot with a 16-row "
-        "accumulator for a single token, and packed weights indexed with N on the fastest "
-        "axis so every lane pulled its own cache line. The dense kernel remains starved for "
-        "parallelism, which is why it gains less. Peak is 864 GB/s. "
-        "Source: engine/kernels/RESULTS.md",
+        "Figure 2.",
+        "Both hot kernels ran far below the memory roofline.",
+        "Each had been written as a matrix-matrix product and was being used at decode as a "
+        "matrix-vector product: tl.dot with a 16-row accumulator to multiply a single token, "
+        "and packed weights indexed with the output dimension on the fastest-varying axis, so "
+        "neighbouring lanes in a warp addressed separate cache lines. The dense kernel gains "
+        "less because a single 5.31 MB matrix yields only 64 thread blocks against 142 "
+        "streaming multiprocessors, leaving it starved for parallelism rather than limited by "
+        "memory. Source: engine/kernels/RESULTS.md",
     )
-    fig.tight_layout()
-    fig.savefig(OUT / "kernel-bandwidth.png", bbox_inches="tight")
-    plt.close(fig)
+    _save(fig, "kernel-bandwidth")
 
 
 def decode_time_split() -> None:
@@ -178,148 +290,164 @@ def decode_time_split() -> None:
     launches = [78, 104, 2236, 360, 300, 186]
     colors = [WARN, WARN, ACCENT, BASE, BASE, BASE]
 
-    fig, ax = plt.subplots(figsize=(7.6, 3.2))
-    bars = ax.barh(labels, values, color=colors, height=0.62)
+    fig, ax = plt.subplots(figsize=(6.6, 2.9))
+    bars = ax.barh(labels, values, color=colors, height=0.6, zorder=3)
     for bar, value, count in zip(bars, values, launches, strict=True):
         ax.text(
-            value + 0.25,
+            value + 0.3,
             bar.get_y() + bar.get_height() / 2,
-            f"{value:.2f} ms   {count} launches",
+            f"{value:.2f} ms" + r"$\quad$" + f"{count} launches",
             va="center",
-            fontsize=8.5,
+            fontsize=7.8,
+            zorder=5,
         )
-    ax.set_xlim(0, 20)
-    ax.set_xlabel("milliseconds per decoded token")
+    ax.set_xlim(0, 20.5)
+    ax.set_xlabel("time per decoded token  /  ms")
     ax.invert_yaxis()
-    ax.grid(axis="x", color="#ededed", linewidth=0.8)
-    ax.set_axisbelow(True)
-    _finish(
+    _grid_x(ax)
+    _caption(
         ax,
-        "Two kernels held 77 percent of decode time",
-        "Measured on an L40S over 28.85 ms of GPU work per token. CUDA graph capture had "
-        "already removed launch overhead, so the 2,236 elementwise launches cost only 3.4 ms "
-        "between them and kernel count was not the bottleneck. "
+        "Figure 3.",
+        "Two kernels held 77 percent of decode time.",
+        "Measured over 28.85 ms of GPU work per decoded token on an L40S. CUDA graph capture "
+        "had already removed launch overhead, so the 2,236 elementwise launches cost only "
+        "3.4 ms between them and kernel count was not the bottleneck. This measurement is "
+        "what redirected the work from reducing launches to reshaping two kernels. "
         "Source: engine/klinear/DECODE-PROFILE.md",
     )
-    fig.tight_layout()
-    fig.savefig(OUT / "decode-time-split.png", bbox_inches="tight")
-    plt.close(fig)
+    _save(fig, "decode-time-split")
 
 
 def weight_bytes() -> None:
-    """What the quantisation actually removed."""
-    labels = ["BF16 as shipped", "Selective INT4"]
+    """What the quantisation removed."""
+    labels = ["BF16 as shipped", "selective INT4"]
     values = [98.245528576, 28.803304448]
 
-    fig, ax = plt.subplots(figsize=(7.2, 2.5))
-    bars = ax.barh(labels, values, color=[BASE, ACCENT], height=0.5)
+    fig, ax = plt.subplots(figsize=(6.6, 2.1))
+    bars = ax.barh(labels, values, color=[BASE, ACCENT], height=0.46, zorder=3)
     for bar, value in zip(bars, values, strict=True):
         ax.text(
-            value + 1.4,
+            value + 1.6,
             bar.get_y() + bar.get_height() / 2,
             f"{value:.2f} GB",
             va="center",
-            fontsize=9,
-            fontweight="bold",
+            fontsize=8.5,
+            zorder=5,
         )
     ax.set_xlim(0, 118)
-    ax.set_xlabel("weight bytes, GB")
+    ax.set_xlabel("weight storage  /  GB")
     ax.invert_yaxis()
-    ax.grid(axis="x", color="#ededed", linewidth=0.8)
-    ax.set_axisbelow(True)
-    ax.axvline(34.36, color=WARN, linestyle="--", linewidth=1.0)
-    ax.text(35.6, -0.42, "32 GiB card", color=WARN, fontsize=8)
-    _finish(
+    ax.axvline(34.36, color=WARN, linestyle=(0, (4, 3)), linewidth=0.8, zorder=2)
+    ax.text(35.8, -0.42, "32 GiB card", color=WARN, fontsize=7.6)
+    _grid_x(ax)
+    _caption(
         ax,
-        "Weight bytes, 3.41x smaller",
-        "Built and verified on an H100. Planned and actual byte totals agree exactly. "
-        "Source: engine/quant/QUANTIZATION-RESULTS.md",
+        "Figure 4.",
+        r"Weight storage, $3.41\times$ smaller.",
+        "Built and verified from the real checkpoint on one NVIDIA H100. Planned and actual "
+        "byte totals agree exactly. Symmetric signed INT4 with group size 32 on the reduction "
+        "axis and BF16 per-group scales, which is 4.5 bits per parameter once the scales are "
+        "counted. Source: engine/quant/QUANTIZATION-RESULTS.md",
     )
-    fig.tight_layout()
-    fig.savefig(OUT / "weight-bytes.png", bbox_inches="tight")
-    plt.close(fig)
+    _save(fig, "weight-bytes")
 
 
 def quantisation_quality() -> None:
-    """What the quantisation cost, both profiles, measured against BF16."""
-    metrics = ["Next token\ntop 1 agreement", "Greedy output\nidentity", "Router set\nagreement"]
+    """What the quantisation cost, measured against BF16."""
+    metrics = [
+        "next-token\ntop-1 agreement",
+        "greedy output\nidentity",
+        "router set\nagreement",
+    ]
     default = [85.16, 37.69, 34.30]
     retained = [91.41, 40.77, 36.74]
 
     x = range(len(metrics))
-    width = 0.34
-    fig, ax = plt.subplots(figsize=(7.6, 3.8))
-    first = ax.bar([i - width / 2 for i in x], default, width, label="default INT4", color=BASE)
+    width = 0.32
+    fig, ax = plt.subplots(figsize=(6.6, 3.2))
+    first = ax.bar(
+        [i - width / 2 for i in x], default, width,
+        label="default INT4", color=BASE, zorder=3,
+    )
     second = ax.bar(
-        [i + width / 2 for i in x], retained, width, label="shared experts kept BF16", color=ACCENT
+        [i + width / 2 for i in x], retained, width,
+        label="shared experts kept BF16", color=ACCENT, zorder=3,
     )
     for group in (first, second):
         for bar in group:
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 1.2,
-                f"{bar.get_height():.1f}%",
+                bar.get_height() + 1.6,
+                f"{bar.get_height():.1f}",
                 ha="center",
-                fontsize=8.5,
+                fontsize=7.8,
+                zorder=5,
             )
     ax.set_xticks(list(x))
     ax.set_xticklabels(metrics)
-    ax.set_ylabel("agreement with BF16, percent")
-    ax.set_ylim(0, 118)
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{v:.0f}"))
-    ax.legend(frameon=False, loc="upper center", ncol=2, fontsize=8.5, bbox_to_anchor=(0.5, 1.0))
-    ax.grid(axis="y", color="#ededed", linewidth=0.8)
-    ax.set_axisbelow(True)
-    _finish(
+    ax.set_ylabel(f"agreement with BF16  /  {PERCENT_LABEL}")
+    _grid_y(ax, 116)
+    ax.legend(loc="upper center", ncol=2, bbox_to_anchor=(0.5, 1.0))
+    _caption(
         ax,
-        "What INT4 costs, measured against BF16",
-        "Both sides served by the same vLLM on one H200, identical prompts, only the weights differ. "
-        "Perplexity rises 0.81 percent on the default profile. "
-        "Source: engine/accuracy/RESULTS.md",
+        "Figure 5.",
+        "What INT4 costs, measured against the BF16 checkpoint.",
+        "Both sides served by the same vLLM build on one H200 with identical prompts, so only "
+        "the weights differ. Keeping the shared experts in BF16 improves every agreement "
+        "metric shown yet makes perplexity worse by 1.95 percent, which is why it was not "
+        "adopted. These quantisation costs are an order of magnitude larger than the kernel "
+        "differences quoted in Figure 1. Source: engine/accuracy/RESULTS.md",
     )
-    fig.tight_layout()
-    fig.savefig(OUT / "quantisation-quality.png", bbox_inches="tight")
-    plt.close(fig)
+    _save(fig, "quantisation-quality")
 
 
 def memory_headroom() -> None:
-    """The fused kernels gave memory back rather than spending it."""
-    labels = ["Reference kernels", "Fused kernels"]
+    """The speedup gave memory back rather than spending it."""
+    labels = ["reference kernels", "fused kernels"]
     peak = [29.56, 27.63]
     budget = 32.0
 
-    fig, ax = plt.subplots(figsize=(7.2, 2.5))
-    bars = ax.barh(labels, peak, color=[BASE, ACCENT], height=0.5)
+    fig, ax = plt.subplots(figsize=(6.6, 2.1))
+    bars = ax.barh(labels, peak, color=[BASE, ACCENT], height=0.46, zorder=3)
     for bar, value in zip(bars, peak, strict=True):
-        slack = budget - value
-        note = f"{value:.2f} GiB used, {slack:.2f} GiB free"
-        ax.text(value + 0.3, bar.get_y() + bar.get_height() / 2, note, va="center", fontsize=8.5)
-    ax.axvline(budget, color=INK, linestyle="--", linewidth=1.0)
-    ax.text(budget + 0.3, -0.45, "32 GiB cap", fontsize=8)
+        ax.text(
+            value + 0.32,
+            bar.get_y() + bar.get_height() / 2,
+            f"{value:.2f} GiB used, {budget - value:.2f} GiB free",
+            va="center",
+            fontsize=8,
+            zorder=5,
+        )
+    ax.axvline(budget, color=WARN, linestyle=(0, (4, 3)), linewidth=0.8, zorder=2)
+    ax.text(budget + 0.32, -0.42, "32 GiB cap", fontsize=7.6, color=WARN)
     ax.set_xlim(0, 39)
-    ax.set_xlabel("peak reserved device memory, GiB")
+    ax.set_xlabel("peak reserved device memory  /  GiB")
     ax.invert_yaxis()
-    ax.grid(axis="x", color="#ededed", linewidth=0.8)
-    ax.set_axisbelow(True)
-    _finish(
+    _grid_x(ax)
+    _caption(
         ax,
-        "The speedup gave memory back",
-        "An earlier version of this figure said the opposite, because it was drawn before the "
-        "fused kernels existed. The GEMV path allocates no per-call partial buffers, so peak "
-        "reserved memory fell by 1.93 GiB while throughput went up 3.18x. "
+        "Figure 6.",
+        "The speedup gave memory back.",
+        "The GEMV path allocates no per-call partial reduction buffers, so peak reserved "
+        "memory fell by 1.93 GiB while throughput rose 3.18 times. An earlier version of this "
+        "figure claimed the opposite, because it was drawn from the pre-fusion engine where "
+        "preallocation and graph capture had bought speed with memory. "
         "Source: engine/kernels/RESULTS.md",
     )
-    fig.tight_layout()
-    fig.savefig(OUT / "memory-headroom.png", bbox_inches="tight")
-    plt.close(fig)
+    _save(fig, "memory-headroom")
 
 
 if __name__ == "__main__":
-    decode_stages()
+    print(
+        "LaTeX rendering: "
+        + ("on" if USE_TEX else "off, using Computer Modern mathtext")
+    )
+    decode_throughput()
     kernel_bandwidth()
     decode_time_split()
     weight_bytes()
     quantisation_quality()
     memory_headroom()
-    for item in sorted(OUT.glob("*.png")):
-        print(f"wrote {item.relative_to(OUT.parent.parent)}  {item.stat().st_size} bytes")
+    for item in sorted(OUT.glob("*")):
+        if item.suffix in {".png", ".pdf"}:
+            print(f"wrote {item.relative_to(OUT.parent.parent)}  {item.stat().st_size} bytes")

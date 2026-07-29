@@ -115,6 +115,17 @@ happen again.
 Full numbers, including what we built and chose not to ship, are in
 [`engine/kernels/RESULTS.md`](engine/kernels/RESULTS.md).
 
+Every figure above is generated from the measured numbers by
+[`scripts/make_figures.py`](scripts/make_figures.py) and is written twice, as PNG
+and as vector PDF in [`docs/figures/`](docs/figures/) for use in a paper. Set
+`USE_TEX=1` to render through a real LaTeX toolchain if one is installed;
+without it the figures use Computer Modern through matplotlib's mathtext, which
+matches.
+
+```bash
+uv run python scripts/make_figures.py
+```
+
 ## Built by RunInfra
 
 This project is built and maintained by [RunInfra](https://runinfra.ai/).
