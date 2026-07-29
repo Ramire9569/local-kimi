@@ -70,7 +70,12 @@ export ANTHROPIC_AUTH_TOKEN=local
 claude
 ```
 
-The serve flags above are defined in [`k3/cli.py`](k3/cli.py). See the [full quickstart](docs/QUICKSTART.md) for llama.cpp setup, the model download, and troubleshooting.
+The serve flags above are defined in [`k3/cli.py`](k3/cli.py), and
+[`tests/test_quickstart_path.py`](tests/test_quickstart_path.py) runs this exact
+command as a subprocess on every CI run, sends the request Claude Code sends,
+and asserts the upstream was called in OpenAI Chat Completions. See the
+[full quickstart](docs/QUICKSTART.md) for llama.cpp setup, the model download,
+and troubleshooting, which are the parts this repository does not own.
 
 ## Measured here
 
