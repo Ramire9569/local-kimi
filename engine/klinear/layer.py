@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from engine.quant.w3a16 import W3A16Tensor
 from engine.quant.w4a16 import W4A16Tensor
 
 from .attention import KDAAttention, MLAAttention
@@ -15,6 +16,7 @@ from .manifest import TensorSpec, real_layer_manifest
 from .moe import DenseMLP, ExpertProvider, KLinearMoE
 from .norm import RMSNorm
 from .quantized import LinearFactory, W4A16Linear
+from .quantized3 import W3A16Linear
 from .state import KDALayerState, LayerState, MLALayerState
 from .weights import SafetensorIndexStore
 
@@ -209,18 +211,27 @@ class KLinearDecoderLayer(nn.Module):
                 device=device,
                 dtype=dtype,
             )
-            if isinstance(payload, W4A16Tensor):
-                if not isinstance(module, W4A16Linear):
-                    raise TypeError(
-                        f"{prefix + suffix} is packed but the model built a BF16 linear"
-                    )
-                module.load_encoded(payload)
-            else:
-                if isinstance(module, W4A16Linear):
-                    raise TypeError(
-                        f"{prefix + suffix} is retained BF16 but the model built W4A16"
-                    )
-                _replace_parameter(module, "weight", payload)
+            # Each packed codec has its own tensor and its own linear, and they
+            # must be matched. Feeding a W3A16 payload to a W4A16 linear would
+            # not raise: it would decode three-bit fields as four-bit ones and
+            # produce confident nonsense, so the mismatch is an explicit error.
+            packed_pairs = ((W4A16Tensor, W4A16Linear), (W3A16Tensor, W3A16Linear))
+            for tensor_type, linear_type in packed_pairs:
+                if isinstance(payload, tensor_type):
+                    if not isinstance(module, linear_type):
+                        raise TypeError(
+                            f"{prefix + suffix} is {tensor_type.__name__} but the "
+                            f"model built {type(module).__name__}"
+                        )
+                    module.load_encoded(payload)
+                    loaded.add(suffix)
+                    return
+            if isinstance(module, (W4A16Linear, W3A16Linear)):
+                raise TypeError(
+                    f"{prefix + suffix} is retained BF16 but the model built "
+                    f"{type(module).__name__}"
+                )
+            _replace_parameter(module, "weight", payload)
             loaded.add(suffix)
 
         if self.is_kda:

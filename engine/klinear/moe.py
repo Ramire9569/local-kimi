@@ -284,6 +284,20 @@ class KLinearMoE(nn.Module):
         stable_indices = shape_stable_expert_indices(
             expert_indices, self.num_experts
         )
+        # The W3A16 bank builder writes the SAME buffer names as the W4A16 one,
+        # so nothing downstream can tell three-bit banks from four-bit ones by
+        # inspection. Running the W4A16 kernel over W3A16 banks does not raise:
+        # it decodes three-bit fields as four-bit ones and returns plausible
+        # nonsense. There is no grouped W3A16 kernel yet, so refuse rather than
+        # produce that.
+        if getattr(self, "_grouped_codec", "w4a16") != "w4a16":
+            raise NotImplementedError(
+                "the expert banks are "
+                f"{getattr(self, '_grouped_codec')} but only a W4A16 grouped "
+                "kernel exists. Running the W4A16 kernel over these banks would "
+                "silently decode the weights wrongly. A grouped W3A16 kernel is "
+                "required before W3A16 decode can work."
+            )
         kernel = self._grouped_kernel
         if kernel is None:  # grouped banks built without prepare_grouped_w4a16
             kernel = registry.resolve(W4A16_GROUPED)

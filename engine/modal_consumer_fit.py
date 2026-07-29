@@ -60,6 +60,7 @@ def fit(
     repeats: int = 3,
 ) -> dict:
     import time
+    import traceback
 
     import torch
     from transformers import AutoTokenizer
@@ -84,6 +85,7 @@ def fit(
         torch.cuda.synchronize(device)
     except Exception as error:  # noqa: BLE001
         result["error"] = f"{type(error).__name__}: {error}"[:600]
+        result["traceback"] = traceback.format_exc()[-4000:]
         result["load_seconds"] = time.perf_counter() - started
         print(json.dumps(result, indent=2, sort_keys=True))
         return result

@@ -45,6 +45,11 @@ IMAGE = (
         "-DGGML_CUDA=ON -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release "
         "-DCMAKE_CUDA_ARCHITECTURES=89",
         "cmake --build /opt/llama.cpp/build --config Release -j 16 --target llama-bench",
+        # The link step needs libcuda.so.1, which only exists when a driver is
+        # present. Modal image builds have no GPU by default, so the build fails
+        # with undefined references to cuMemCreate and friends. Attaching a GPU
+        # to the build puts the real driver on the image.
+        gpu="L40S",
     )
 )
 

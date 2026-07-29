@@ -201,7 +201,12 @@ def _set_grouped_buffer(module: nn.Module, name: str, value: torch.Tensor) -> No
 
 
 def prepare_grouped_w3a16(module: nn.Module) -> None:
-    """Transfer resident W3A16 experts into contiguous per-layer banks."""
+    """Transfer resident W3A16 experts into contiguous per-layer banks.
+
+    Marks the module so the decode path can tell these banks apart from
+    W4A16 ones. They share buffer names, and the W4A16 kernel would decode
+    them wrongly without raising.
+    """
     if getattr(module, "grouped_w1_packed", None) is not None:
         return
     expert_provider = getattr(module, "expert_provider", None)
@@ -244,6 +249,8 @@ def prepare_grouped_w3a16(module: nn.Module) -> None:
     }
     if len(group_sizes) != 1:
         raise ValueError("grouped W3A16 banks require one shared group size")
+
+    module._grouped_codec = "w3a16"
 
     _set_grouped_buffer(
         module,
