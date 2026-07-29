@@ -59,6 +59,7 @@ def bench_variants(
     new_tokens: int = 64,
     repeats: int = 3,
     cap_memory: bool = True,
+    quantize_lm_head: bool = False,
 ) -> dict:
     import time
 
@@ -82,6 +83,8 @@ def bench_variants(
     model = KLinearModel.from_directory(MODEL_DIR, device=device, dtype=torch.bfloat16)
     torch.cuda.synchronize(device)
     load_seconds = time.perf_counter() - load_started
+
+    lm_head_saved_bytes = model.quantize_lm_head() if quantize_lm_head else 0
 
     moe_modules = [m for m in model.modules() if isinstance(m, KLinearMoE)]
     if not moe_modules:
@@ -210,6 +213,8 @@ def bench_variants(
         "memory_capped_to_bytes": BUDGET_BYTES if cap_memory else None,
         "load_seconds": load_seconds,
         "resident_weight_bytes": model.resident_weight_bytes,
+        "lm_head_quantized": quantize_lm_head,
+        "lm_head_saved_bytes": lm_head_saved_bytes,
         "prompt": prompt,
         "prompt_tokens": int(input_ids.shape[1]),
         "distinct_generated_ids": len(set(reference_ids or [])),
@@ -227,12 +232,14 @@ def main(
     variants: str = "reference/reference,triton_gemv/reference,triton_gemv/triton_gemv",
     new_tokens: int = 64,
     repeats: int = 3,
+    quantize_lm_head: bool = False,
 ) -> None:
     payload = bench_variants.remote(
         [name.strip() for name in variants.split(",") if name.strip()],
         prompt=prompt,
         new_tokens=new_tokens,
         repeats=repeats,
+        quantize_lm_head=quantize_lm_head,
     )
     print("\n" + "=" * 74)
     print(f"GPU {payload['gpu']}")

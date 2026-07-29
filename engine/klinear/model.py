@@ -127,6 +127,35 @@ class KLinearModel(nn.Module):
         )
         self._weight_store = None
         self._expert_provider = expert_provider
+        self._lm_head_quantized = False
+
+    def quantize_lm_head(self) -> int:
+        """Replace the BF16 vocabulary head with an INT4 one, in place.
+
+        The head is 163,840 by 2,304, which is 755 MB in BF16 and 32.3 percent
+        of every byte decode reads. The quantisation plan deliberately retains
+        it because output logits are quantisation sensitive, so this is an
+        experiment rather than the default: it trades a large bandwidth saving
+        against a quality cost that has to be measured, not assumed.
+
+        Returns the number of bytes saved. Call before capturing a CUDA graph.
+        """
+        from engine.quant.w4a16 import quantise
+
+        from .quantized import W4A16Linear
+
+        if self._lm_head_quantized:
+            return 0
+        weight = self.lm_head.weight
+        if weight is None or weight.device.type == "meta":
+            raise RuntimeError("the vocabulary head has no loaded weight to quantise")
+        before = weight.numel() * weight.element_size()
+        replacement = W4A16Linear.from_encoded(quantise(weight.to(torch.bfloat16)))
+        replacement.to(weight.device)
+        self.lm_head = replacement
+        self._lm_head_quantized = True
+        torch.cuda.empty_cache() if weight.is_cuda else None
+        return before - replacement.resident_bytes
 
     @classmethod
     def from_directory(
