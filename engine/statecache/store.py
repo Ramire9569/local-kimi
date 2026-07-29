@@ -1,4 +1,14 @@
-"""Pinned-host storage and in-place restore for Kimi-Linear decode state."""
+"""Pinned-host storage and in-place restore for Kimi-Linear decode state.
+
+MLA snapshots deliberately store less than the live state. They retain only
+``compressed_kv``, ``rotary_key``, and device position, then rebuild projected
+``key_pass`` and ``value`` buffers during restore through the model's existing
+layernorm and ``kv_b_proj`` path. The real model stores 8,064 bytes per token in
+this compressed form instead of 122,752 live bytes per token. Paying roughly
+ten milliseconds of reasoned 32K rebuild work is intentional because storing
+the projections would use about fifteen times the host memory merely to avoid
+that rebuild against a prefill that takes seconds.
+"""
 
 from __future__ import annotations
 
@@ -10,6 +20,7 @@ from typing import Any
 
 import torch
 
+from engine.klinear.attention import MLAAttention
 from engine.klinear.state import KDALayerState, KLinearDecodeState, MLALayerState
 
 from .key import ModelFingerprint, fingerprint_digest, token_tuple
@@ -27,8 +38,6 @@ class _HostKDA:
 class _HostMLA:
     compressed_kv: torch.Tensor
     rotary_key: torch.Tensor
-    key_pass: torch.Tensor
-    value: torch.Tensor
     position: torch.Tensor
 
 
@@ -93,8 +102,6 @@ def _all_tensors(snapshot: _Snapshot) -> tuple[torch.Tensor, ...]:
                 (
                     layer.compressed_kv,
                     layer.rotary_key,
-                    layer.key_pass,
-                    layer.value,
                     layer.position,
                 )
             )
@@ -104,7 +111,20 @@ def _all_tensors(snapshot: _Snapshot) -> tuple[torch.Tensor, ...]:
 
 
 class StateCache:
-    """LRU storage for full prefix snapshots in pinned host memory.
+    """LRU storage for compressed prefix snapshots in pinned host memory.
+
+    A live MLA state contains compressed latent and rotary tensors plus the much
+    larger projected ``key_pass`` and ``value`` tensors. Snapshots deliberately
+    store only the compressed latent, rotary key, and device position. Restore
+    then repeats the existing MLA layernorm, ``kv_b_proj``, transpose, and split
+    path to rebuild projected keys and values into the graph-bound buffers.
+
+    For the real seven MLA layers this stores 8,064 bytes per token instead of
+    122,752 bytes per token, about fifteen times less host memory. The trade is
+    one projection per MLA layer over the cached prefix, reasoned at roughly
+    0.96 TFLOP or about ten milliseconds at 32K. This is intentional because
+    storing projected keys and values would spend fifteen times the bytes to
+    save about ten milliseconds against a prefill that takes seconds.
 
     Pinned memory is required for genuinely asynchronous host-to-device copies.
     Pageable memory forces CUDA to stage through an internal pinned allocation,
@@ -196,14 +216,10 @@ class StateCache:
                     )
                 )
             elif isinstance(layer, MLALayerState):
-                if layer.key_pass is None or layer.value is None:
-                    raise ValueError("MLA snapshot requires projected key and value state")
                 if token_count > layer.capacity:
                     raise ValueError("MLA state is shorter than token_count")
                 total += _tensor_bytes(layer.compressed_kv[:, :token_count])
                 total += _tensor_bytes(layer.rotary_key[:, :token_count])
-                total += _tensor_bytes(layer.key_pass[:, :, :token_count])
-                total += _tensor_bytes(layer.value[:, :, :token_count])
                 total += torch.empty((), dtype=torch.long).element_size()
             else:
                 raise TypeError("unsupported KLinear layer state")
@@ -238,8 +254,6 @@ class StateCache:
                     )
                 )
             elif isinstance(layer, MLALayerState):
-                if layer.key_pass is None or layer.value is None:
-                    raise ValueError("MLA snapshot requires projected key and value state")
                 if token_count > layer.capacity:
                     raise ValueError("MLA state is shorter than token_count")
                 if layer.compressed_kv.device.type == "cuda":
@@ -258,8 +272,6 @@ class StateCache:
                     _HostMLA(
                         _host_tensor(layer.compressed_kv[:, :token_count]),
                         _host_tensor(layer.rotary_key[:, :token_count]),
-                        _host_tensor(layer.key_pass[:, :, :token_count]),
-                        _host_tensor(layer.value[:, :, :token_count]),
                         _host_tensor(layer_position),
                     )
                 )
@@ -386,13 +398,11 @@ class StateCache:
                         "kind": "mla",
                         "compressed_kv": layer.compressed_kv,
                         "rotary_key": layer.rotary_key,
-                        "key_pass": layer.key_pass,
-                        "value": layer.value,
                         "position": layer.position,
                     }
                 )
         return {
-            "schema": 1,
+            "schema": 2,
             "layers": layers,
             "token_count": snapshot.token_count,
             "attention_mask": snapshot.attention_mask,
@@ -403,7 +413,7 @@ class StateCache:
         }
 
     def _snapshot_from_payload(self, payload: dict[str, Any]) -> _Snapshot:
-        if payload.get("schema") != 1:
+        if payload.get("schema") != 2:
             raise ValueError("unsupported state-cache disk snapshot schema")
         layers: list[_HostLayer] = []
         for raw in payload["layers"]:
@@ -423,8 +433,6 @@ class StateCache:
                     _HostMLA(
                         _pinned_copy(raw["compressed_kv"]),
                         _pinned_copy(raw["rotary_key"]),
-                        _pinned_copy(raw["key_pass"]),
-                        _pinned_copy(raw["value"]),
                         _pinned_copy(raw["position"]),
                     )
                 )
@@ -538,8 +546,6 @@ class StateCache:
                 pairs = (
                     (saved.compressed_kv, current.compressed_kv[:, : snapshot.token_count]),
                     (saved.rotary_key, current.rotary_key[:, : snapshot.token_count]),
-                    (saved.key_pass, current.key_pass[:, :, : snapshot.token_count]),
-                    (saved.value, current.value[:, :, : snapshot.token_count]),
                 )
                 if any(
                     source.shape != value.shape or source.dtype != value.dtype
@@ -584,23 +590,89 @@ class StateCache:
                 current.rotary_key[:, :count].copy_(
                     saved.rotary_key, non_blocking=non_blocking
                 )
-                current.key_pass[:, :, :count].copy_(
-                    saved.key_pass, non_blocking=non_blocking
-                )
-                current.value[:, :, :count].copy_(
-                    saved.value, non_blocking=non_blocking
-                )
+                # Static MLA scores the full capacity before adding its finite
+                # mask. NaNs in an uninitialized tail therefore survive masking.
+                current.compressed_kv[:, count:].zero_()
+                current.rotary_key[:, count:].zero_()
+                current.key_pass[:, :, count:].zero_()
+                current.value[:, :, count:].zero_()
                 current.position.copy_(saved.position, non_blocking=non_blocking)
         if snapshot.attention_mask is not None:
             target.attention_mask[:, : snapshot.token_count].copy_(
                 snapshot.attention_mask,
                 non_blocking=non_blocking,
             )
+            target.attention_mask[:, snapshot.token_count :].zero_()
         target.position.copy_(snapshot.position, non_blocking=non_blocking)
         object.__setattr__(target, "tokens_seen", snapshot.token_count)
 
-    def load(self, key: str, into_state: KLinearDecodeState) -> bool:
-        """Restore ``key`` into existing buffers and return whether it existed."""
+    @staticmethod
+    def _model_layers(model: Any, expected_count: int) -> Any:
+        layers = getattr(model, "layers", None)
+        if layers is None or len(layers) != expected_count:
+            raise ValueError("model layers do not match the cached state")
+        return layers
+
+    @torch.inference_mode()
+    def rebuild_mla(
+        self,
+        model: Any,
+        state: KLinearDecodeState,
+        *,
+        token_count: int | None = None,
+    ) -> None:
+        """Rebuild projected MLA keys and values into existing device buffers.
+
+        This is the same path used by ``MLAAttention`` when projected caches are
+        absent: layernorm the compressed latent, apply ``kv_b_proj``, reshape,
+        transpose, then split key and value widths. Only the live prefix is
+        rebuilt because fixed-capacity tails are not part of the snapshot.
+        """
+
+        count = state.tokens_seen if token_count is None else token_count
+        if count < 0 or count > state.tokens_seen:
+            raise ValueError("rebuild token_count is outside the live state")
+        model_layers = self._model_layers(model, len(state.layer_states))
+        for model_layer, layer_state in zip(
+            model_layers,
+            state.layer_states,
+            strict=True,
+        ):
+            if not isinstance(layer_state, MLALayerState):
+                continue
+            attention = getattr(model_layer, "self_attn", None)
+            if not isinstance(attention, MLAAttention):
+                raise ValueError("model and state disagree on an MLA layer")
+            if layer_state.key_pass is None or layer_state.value is None:
+                raise ValueError("target MLA layer has no projected buffers")
+            if layer_state.capacity < count:
+                raise ValueError("target MLA capacity is shorter than the rebuild")
+
+            latent = layer_state.compressed_kv[:, :count]
+            batch = latent.shape[0]
+            rebuilt = attention.kv_b_proj(attention.kv_a_layernorm(latent)).view(
+                batch,
+                count,
+                attention.num_heads,
+                attention.qk_nope_head_dim + attention.v_head_dim,
+            )
+            rebuilt = rebuilt.transpose(1, 2)
+            cached_key_pass, cached_value = torch.split(
+                rebuilt,
+                [attention.qk_nope_head_dim, attention.v_head_dim],
+                dim=-1,
+            )
+            layer_state.key_pass[:, :, :count].copy_(cached_key_pass)
+            layer_state.value[:, :, :count].copy_(cached_value)
+
+    def load(
+        self,
+        key: str,
+        into_state: KLinearDecodeState,
+        *,
+        model: Any,
+    ) -> bool:
+        """Restore compressed state, rebuild MLA projections, and report a hit."""
 
         found = self._snapshot_for_key(key)
         if found is None:
@@ -610,6 +682,7 @@ class StateCache:
         self._wait_until_ready(snapshot, device)
         non_blocking = in_memory and device.type == "cuda"
         self._copy_snapshot(snapshot, into_state, non_blocking=non_blocking)
+        self.rebuild_mla(model, into_state, token_count=snapshot.token_count)
         if not in_memory and device.type == "cuda":
             torch.cuda.current_stream(device).synchronize()
         return True
@@ -618,6 +691,7 @@ class StateCache:
         self,
         key: str,
         *,
+        model: Any,
         device: torch.device | str,
         additional_tokens: int = 1,
     ) -> KLinearDecodeState:
@@ -632,8 +706,9 @@ class StateCache:
         self._wait_until_ready(snapshot, None)
         device = torch.device(device)
         capacity = snapshot.token_count + additional_tokens
+        model_layers = self._model_layers(model, len(snapshot.layers))
         layers: list[KDALayerState | MLALayerState | None] = []
-        for saved in snapshot.layers:
+        for model_layer, saved in zip(model_layers, snapshot.layers, strict=True):
             if saved is None:
                 layers.append(None)
             elif isinstance(saved, _HostKDA):
@@ -653,9 +728,12 @@ class StateCache:
             else:
                 batch, _, latent_width = saved.compressed_kv.shape
                 rotary_width = saved.rotary_key.shape[-1]
-                heads = saved.key_pass.shape[1]
-                key_width = saved.key_pass.shape[-1]
-                value_width = saved.value.shape[-1]
+                attention = getattr(model_layer, "self_attn", None)
+                if not isinstance(attention, MLAAttention):
+                    raise ValueError("model and snapshot disagree on an MLA layer")
+                heads = attention.num_heads
+                key_width = attention.qk_nope_head_dim
+                value_width = attention.v_head_dim
                 layers.append(
                     MLALayerState(
                         torch.empty(
@@ -677,7 +755,7 @@ class StateCache:
                             heads,
                             capacity,
                             key_width,
-                            dtype=saved.key_pass.dtype,
+                            dtype=saved.compressed_kv.dtype,
                             device=device,
                         ),
                         torch.empty(
@@ -685,7 +763,7 @@ class StateCache:
                             heads,
                             capacity,
                             value_width,
-                            dtype=saved.value.dtype,
+                            dtype=saved.compressed_kv.dtype,
                             device=device,
                         ),
                         torch.full(

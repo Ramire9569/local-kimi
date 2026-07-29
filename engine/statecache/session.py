@@ -51,8 +51,10 @@ def warm_prefill(
     """Return decode-ready state and whether any exact cached prefix was used.
 
     An exact hit performs no prefill. An extension hit restores the longest
-    exact token prefix and advances only the remaining suffix. The current
-    fixed-capacity MLA implementation accepts one token at a time, so suffix
+    exact token prefix and advances only the remaining suffix. Before either
+    path returns or advances, the compressed snapshot rebuilds MLA projected
+    keys and values. The fixed-capacity MLA implementation accepts one token
+    at a time, so suffix
     advancement is intentionally incremental. It is exact and preserves the
     restored tensor addresses, but a long suffix does not receive batched
     prefill throughput.
@@ -89,11 +91,12 @@ def warm_prefill(
         if target is None:
             target = cache.allocate_state(
                 exact[0],
+                model=model,
                 device=device,
                 additional_tokens=decode_capacity,
             )
         _validate_capacity(target, len(tokens) + decode_capacity)
-        if not cache.load(exact[0], target):
+        if not cache.load(exact[0], target, model=model):
             raise RuntimeError("state-cache entry disappeared during exact restore")
         return target, True
 
@@ -104,11 +107,12 @@ def warm_prefill(
         if target is None:
             target = cache.allocate_state(
                 prefix_cache_key,
+                model=model,
                 device=device,
                 additional_tokens=additional,
             )
         _validate_capacity(target, len(tokens) + decode_capacity)
-        if not cache.load(prefix_cache_key, target):
+        if not cache.load(prefix_cache_key, target, model=model):
             raise RuntimeError("state-cache entry disappeared during prefix restore")
 
         state = target
@@ -136,7 +140,6 @@ def warm_prefill(
     return state, False
 
 
-
 @torch.inference_mode()
 def cached_prefill(
     model: Any,
@@ -149,11 +152,11 @@ def cached_prefill(
     """Prefill through the cache, returning an output that carries logits.
 
     `warm_prefill` returns state only. On an exact hit it runs no prefill at
-    all, so there are no logits for the final prompt token, and both the
-    streaming and non-streaming generators need them to pick the first token.
+    all, so there are no logits for the final prompt token, and both generators
+    need them to pick the first token.
 
     So the cache is keyed on ``token_ids[:, :-1]`` and the final token is always
-    prefilled against the restored state. That is the same warm-request shape
+    prefilled against the restored state. That is the warm-request shape
     BENCH-STATECACHE.py measures: restore the prefix, advance one token.
 
     Returns ``(output, was_hit)``.
@@ -167,17 +170,18 @@ def cached_prefill(
     tokens = token_tuple(prefix)
     fingerprint = model_fingerprint or fingerprint_model(model)
     key = prefix_key(tokens, fingerprint)
-    # +1 for the suffix token, then room for everything the caller will generate.
+    # +1 for the suffix token, then room for everything the caller generates.
     capacity = 1 + decode_capacity
 
     found = cache.find_longest_prefix(tokens, fingerprint)
     if found is not None and found[1] == len(tokens):
         target = cache.allocate_state(
             key,
+            model=model,
             device=_model_device(model, token_ids),
             additional_tokens=capacity,
         )
-        if cache.load(key, target):
+        if cache.load(key, target, model=model):
             return prefill(model, suffix, state=target), True
 
     output = prefill(model, prefix)

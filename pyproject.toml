@@ -108,6 +108,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 "engine/kernels/BENCH-GEMV.py" = ["F821"]
 "engine/kernels/BENCH-W3A16.py" = ["F821", "E402"]
 "engine/statecache/BENCH-STATECACHE.py" = ["F821"]
+"engine/kernels/BENCH-W3A16-GROUPED.py" = ["F821"]
 # Existing debt in files owned by other lanes. Remove an entry when its owner fixes it.
 "k3/cli.py" = ["I001"]
 "k3/detect.py" = ["F541"]

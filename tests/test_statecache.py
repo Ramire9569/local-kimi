@@ -82,6 +82,25 @@ def _greedy_from_state(
     return torch.stack(generated, dim=1)
 
 
+def _cached_greedy_request(
+    model: KLinearModel,
+    prompt: torch.Tensor,
+    token_count: int,
+    cache: StateCache,
+    fingerprint: dict[str, str],
+) -> torch.Tensor:
+    state, _ = warm_prefill(
+        model,
+        prompt[:, :-1],
+        cache,
+        decode_capacity=token_count + 1,
+        model_fingerprint=fingerprint,
+    )
+    output = prefill(model, prompt[:, -1:], state=state)
+    first_token = output.logits[:, -1].argmax(dim=-1)
+    return _greedy_from_state(model, output.state, first_token, token_count)
+
+
 def _storage_pointers(state: KLinearDecodeState) -> tuple[int, ...]:
     pointers = []
     for layer in state.layer_states:
@@ -106,6 +125,38 @@ def _storage_pointers(state: KLinearDecodeState) -> tuple[int, ...]:
             )
     pointers.append(state.position.data_ptr())
     return tuple(pointers)
+
+
+def _compressed_snapshot_bytes(state: KLinearDecodeState) -> int:
+    total = state.position.element_size()
+    for layer in state.layer_states:
+        if isinstance(layer, KDALayerState):
+            total += sum(
+                tensor.numel() * tensor.element_size()
+                for tensor in (
+                    layer.q_conv,
+                    layer.k_conv,
+                    layer.v_conv,
+                    layer.recurrent,
+                )
+            )
+        elif isinstance(layer, MLALayerState):
+            count = state.tokens_seen
+            total += (
+                layer.compressed_kv[:, :count].numel()
+                * layer.compressed_kv.element_size()
+            )
+            total += (
+                layer.rotary_key[:, :count].numel()
+                * layer.rotary_key.element_size()
+            )
+            total += layer.position.element_size()
+    if state.attention_mask is not None:
+        total += (
+            state.attention_mask[:, : state.tokens_seen].numel()
+            * state.attention_mask.element_size()
+        )
+    return total
 
 
 def _assert_live_state_equal(
@@ -154,6 +205,7 @@ def test_snapshot_mutate_restore_repeats_identical_generated_ids() -> None:
     key = prefix_key(prompt, {"model": "tiny", "weights": "seed-20260729"})
     cache = StateCache(byte_budget=16 * 1024 * 1024)
     assert cache.save(key, state, state.tokens_seen)
+    assert cache.entry_bytes(key) == _compressed_snapshot_bytes(state)
     pointers = _storage_pointers(state)
 
     mutation = decode(model, first_token.unsqueeze(1), state)
@@ -161,13 +213,40 @@ def test_snapshot_mutate_restore_repeats_identical_generated_ids() -> None:
     mutation = decode(model, mutation_token.unsqueeze(1), mutation.state)
     state = mutation.state
     assert state.tokens_seen == prompt.shape[1] + 2
+    with torch.inference_mode():
+        for layer in state.layer_states:
+            if isinstance(layer, MLALayerState):
+                layer.key_pass[:, :, : prompt.shape[1]].zero_()
+                layer.value[:, :, : prompt.shape[1]].zero_()
 
-    assert cache.load(key, state)
+    assert cache.load(key, state, model=model)
     assert state.tokens_seen == prompt.shape[1]
     assert _storage_pointers(state) == pointers
     restored = _greedy_from_state(model, state, first_token, generated_count)
 
     assert torch.equal(restored, expected)
+
+
+def test_two_fresh_restores_after_decode_match_uncached_generation() -> None:
+    model = _model()
+    prompt = torch.tensor([[3, 1, 4, 1, 5, 9, 2]], dtype=torch.long)
+    generated_count = 8
+    expected = _greedy_from_prefill(model, prompt, generated_count)
+    cache = StateCache(byte_budget=16 * 1024 * 1024)
+    fingerprint = {"model": "tiny", "weights": "seed-20260729"}
+
+    results = [
+        _cached_greedy_request(
+            model,
+            prompt,
+            generated_count,
+            cache,
+            fingerprint,
+        )
+        for _ in range(3)
+    ]
+
+    assert all(torch.equal(result, expected) for result in results)
 
 
 def test_different_model_fingerprints_cannot_share_a_snapshot() -> None:
@@ -190,10 +269,15 @@ def test_different_model_fingerprints_cannot_share_a_snapshot() -> None:
     state = prefill(model, prompt).state.reserve_decode_capacity(1)
     cache = StateCache(byte_budget=16 * 1024 * 1024)
     assert cache.save(key_a, state, state.tokens_seen)
-    target = cache.allocate_state(key_a, device="cpu", additional_tokens=1)
+    target = cache.allocate_state(
+        key_a,
+        model=model,
+        device="cpu",
+        additional_tokens=1,
+    )
 
-    assert not cache.load(key_b, target)
-    assert cache.load(key_a, target)
+    assert not cache.load(key_b, target, model=model)
+    assert cache.load(key_a, target, model=model)
 
 
 def test_lru_eviction_respects_the_byte_budget() -> None:
@@ -209,8 +293,13 @@ def test_lru_eviction_respects_the_byte_budget() -> None:
     cache = StateCache(byte_budget=2 * snapshot_bytes)
     assert cache.save("a", state, state.tokens_seen)
     assert cache.save("b", state, state.tokens_seen)
-    target = cache.allocate_state("a", device="cpu", additional_tokens=1)
-    assert cache.load("a", target)
+    target = cache.allocate_state(
+        "a",
+        model=model,
+        device="cpu",
+        additional_tokens=1,
+    )
+    assert cache.load("a", target, model=model)
     assert cache.save("c", state, state.tokens_seen)
 
     assert "a" in cache

@@ -22,6 +22,7 @@ import torch
 
 from engine.klinear.generate import prefill
 from engine.klinear.model import KLinearModel
+from engine.klinear.state import KLinearDecodeState, MLALayerState
 from engine.statecache.key import fingerprint_model, prefix_key
 from engine.statecache.store import StateCache
 
@@ -39,8 +40,24 @@ def _cuda_time(call: Callable[[], _T]) -> tuple[_T, float]:
     return result, start.elapsed_time(end)
 
 
-def _gib(value: int) -> float:
-    return value / (1024**3)
+def _mla_bytes_per_token(state: KLinearDecodeState) -> tuple[int, int]:
+    stored = 0
+    live = 0
+    for layer in state.layer_states:
+        if not isinstance(layer, MLALayerState):
+            continue
+        if layer.key_pass is None or layer.value is None:
+            raise ValueError("benchmark requires complete live MLA state")
+        compressed = (
+            layer.compressed_kv[:, :1].numel()
+            * layer.compressed_kv.element_size()
+        )
+        rotary = layer.rotary_key[:, :1].numel() * layer.rotary_key.element_size()
+        projected_key = layer.key_pass[:, :, :1].numel() * layer.key_pass.element_size()
+        projected_value = layer.value[:, :, :1].numel() * layer.value.element_size()
+        stored += compressed + rotary
+        live += compressed + rotary + projected_key + projected_value
+    return stored, live
 
 
 def benchmark(
@@ -92,6 +109,9 @@ def benchmark(
         torch.cuda.empty_cache()
 
         prefix_output, prefill_ms = _cuda_time(lambda: prefill(model, prefix))
+        mla_stored_bytes_per_token, mla_live_bytes_per_token = _mla_bytes_per_token(
+            prefix_output.state
+        )
         key = prefix_key(prefix, fingerprint)
 
         def snapshot() -> bool:
@@ -117,15 +137,20 @@ def benchmark(
 
         target = cache.allocate_state(
             key,
+            model=model,
             device=device,
             additional_tokens=1,
         )
-        loaded, restore_ms = _cuda_time(lambda: cache.load(key, target))
+        loaded, restore_total_ms = _cuda_time(
+            lambda: cache.load(key, target, model=model)
+        )
         if not loaded:
             raise RuntimeError("snapshot disappeared during restore benchmark")
+        _, rebuild_ms = _cuda_time(lambda: cache.rebuild_mla(model, target))
+        derived_transfer_ms = max(0.0, restore_total_ms - rebuild_ms)
 
         def warm_first_token() -> tuple[object, torch.Tensor]:
-            if not cache.load(key, target):
+            if not cache.load(key, target, model=model):
                 raise RuntimeError("snapshot disappeared during warm request")
             output = prefill(model, suffix, state=target)
             return output, output.logits[:, -1].argmax(dim=-1)
@@ -142,12 +167,16 @@ def benchmark(
                 "prefix_tokens": length,
                 "prefill_ms": prefill_ms,
                 "snapshot_ms": snapshot_ms,
-                "restore_ms": restore_ms,
+                "restore_total_ms": restore_total_ms,
+                "standalone_rebuild_ms": rebuild_ms,
+                "derived_transfer_ms": derived_transfer_ms,
                 "cold_time_to_first_token_ms": cold_ttft_ms,
                 "warm_time_to_first_token_ms": warm_ttft_ms,
                 "time_to_first_token_speedup": cold_ttft_ms / warm_ttft_ms,
                 "snapshot_host_bytes": snapshot_bytes,
                 "total_host_bytes_held": cache.host_bytes,
+                "mla_stored_bytes_per_token": mla_stored_bytes_per_token,
+                "mla_live_bytes_per_token": mla_live_bytes_per_token,
                 "first_token_identical": identical,
                 "decode_tokens_per_second": "unchanged, same decode path",
             }
@@ -164,8 +193,11 @@ def benchmark(
             None if spill_directory is None else str(spill_directory.resolve())
         ),
         "timing_contract": (
-            "Warm time to first token includes restore, one-token suffix prefill, "
-            "and greedy selection. Preallocated target allocation is excluded."
+            "restore_total_ms includes pinned-host transfer and MLA projection "
+            "rebuild. standalone_rebuild_ms repeats the rebuild to expose its "
+            "cost, and derived_transfer_ms is total minus that standalone timing. "
+            "Warm time to first token includes total restore, one-token suffix "
+            "prefill, and greedy selection. Target allocation is excluded."
         ),
         "cache_match_contract": (
             "A hit requires an exact token prefix. A change near the start "
@@ -181,10 +213,17 @@ def benchmark(
 
 def _print_table(result: dict[str, object]) -> None:
     rows = result["rows"]
+    first = rows[0]
+    print(
+        "MLA bytes per token: "
+        f"stored={first['mla_stored_bytes_per_token']:,}, "
+        f"live={first['mla_live_bytes_per_token']:,}. "
+        "Every restore total below includes the projected-cache rebuild."
+    )
     print(
         f"{'prefix':>8} {'cold TTFT':>12} {'warm TTFT':>12} "
         f"{'speedup':>9} {'prefill':>10} {'snapshot':>10} "
-        f"{'restore':>10} {'host GiB':>10}"
+        f"{'rebuild':>10} {'restore':>10} {'stored MiB':>12}"
     )
     for row in rows:
         print(
@@ -194,8 +233,9 @@ def _print_table(result: dict[str, object]) -> None:
             f"{row['time_to_first_token_speedup']:>8.2f}x "
             f"{row['prefill_ms']:>8.2f}ms "
             f"{row['snapshot_ms']:>8.2f}ms "
-            f"{row['restore_ms']:>8.2f}ms "
-            f"{_gib(row['total_host_bytes_held']):>10.3f}"
+            f"{row['standalone_rebuild_ms']:>8.2f}ms "
+            f"{row['restore_total_ms']:>8.2f}ms "
+            f"{row['snapshot_host_bytes'] / (1024**2):>12.2f}"
         )
     print()
     print(result["decode_contract"])
