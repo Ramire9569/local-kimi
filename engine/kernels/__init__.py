@@ -42,6 +42,35 @@ def _register_grouped() -> None:
         "Measured at 51 percent of L40S peak, 5.95x the reference.",
     )(grouped_w4a16_gemv)
 
+    # One variant per launch configuration, so the choice can be swept END TO
+    # END in a single process. Two separate tuning decisions on this project
+    # have now won an isolated benchmark and lost in the engine, so isolated
+    # sweeps are treated as hypotheses and the decode benchmark is the gate.
+    try:
+        from engine.kernels.w4a16_gemv import (
+            GEMV_CONFIGS,
+            _launch_grouped_w4a16_gemv,
+        )
+    except ImportError:
+        return
+
+    def _pinned(config):
+        def run(activations, expert_indices, packed_weights, scales):
+            return _launch_grouped_w4a16_gemv(
+                activations, expert_indices, packed_weights, scales, config
+            )
+
+        return run
+
+    for config in GEMV_CONFIGS:
+        registry.register(
+            W4A16_GROUPED,
+            f"pinned_{config.name}",
+            requires_cuda=True,
+            description=f"Grouped GEMV pinned to {config.name} for end to end "
+            "config sweeps.",
+        )(_pinned(config))
+
 
 def _register_dense() -> None:
     # Every variant of this op takes (activations, packed, scales). The existing
