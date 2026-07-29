@@ -103,11 +103,41 @@ perturbation than the quantisation already applied, not that they are exact.
 ## What was built and not used
 
 The fused SwiGLU kernel in `engine/kernels/moe_swiglu.py` measured 1.133x
-against the original three-call path. It is not wired in. Its baseline was the
-old kernel running at 8 percent of peak, so it fused two slow kernels together,
-and the grouped GEMV makes the same calls 5.95x faster instead. It stays in the
-repository as a registered variant so the measurement is reproducible, and it
-would need rebuilding on the GEMV tiling to be worth enabling.
+against the original three-call path. It is not wired in and it is not
+registered, because it fuses two calls into one and so does not share a
+signature with the grouped kernel it would replace. Its baseline was the old
+kernel running at 8 percent of peak, so it fused two slow kernels together, and
+the grouped GEMV makes the same calls 5.95x faster instead. The file and its
+benchmark stay in the repository so the measurement is reproducible. Rebuilding
+the fusion on the GEMV tiling would be worth roughly 0.5 ms per token, which is
+why it was left rather than deleted.
+
+## One tuning result that did not survive the engine
+
+The dense GEMV reaches only 11 to 17 percent of peak bandwidth at the projection
+shapes. The diagnosis was parallelism: a single 5.31 MB matrix at `BLOCK_N=64`
+produces 64 programs on a 142-SM card. An isolated sweep confirmed it, and a
+narrower tile with no split-K won clearly:
+
+| shape | previous choice | `n16_k64_s1` |
+|---|---:|---:|
+| N=4096, KDA q/k/v | 15.5% of peak | **24.8%**, 1.60x faster |
+| N=6144, MLA q_proj | 24.2% | **32.4%**, 1.34x faster |
+| N=2304, o_proj | 15.9% | **17.0%**, 1.07x faster |
+
+Switching the selector to it moved end to end decode from **109.71 tok/s down to
+105.44**, with the same 38 tok/s baseline in both runs and repeat timings stable
+to 0.05 ms. A real 4 percent regression.
+
+The isolated benchmark runs one shape in a tight loop, where 256 small programs
+fill the card. A decode step issues about 104 such calls back to back, and there
+the narrower tile costs more in per-kernel scheduling than it gains in
+occupancy. The selector keeps the configuration that measured fastest in the
+engine, and the sweep is kept for understanding the kernel rather than for
+choosing its launch parameters.
+
+The general lesson is the one this whole file is built on: the end to end
+measurement is the gate. A kernel benchmark is a hypothesis.
 
 ## Known limits
 

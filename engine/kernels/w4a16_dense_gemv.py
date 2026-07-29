@@ -198,6 +198,31 @@ def _validate_inputs(
 
 
 def _select_dense_config(output_size: int) -> DenseGemvConfig:
+    """Pick a launch config from measured winners, not from reasoning.
+
+    Measured on an L40S at the real decode shapes, percent of the 864 GB/s peak:
+
+        shape                 previous choice      n16_k64_s1     n32_k128_s2
+        N=4096  KDA q/k/v     15.5%                24.8%
+        N=2304  o_proj        15.9%                17.0%
+        N=6144  MLA q_proj    24.2%                32.4%
+        N=163840 lm_head      30.2%                31.8%          53.1%
+
+    Those isolated numbers do NOT predict the engine. Switching the projection
+    shapes to n16_k64_s1 on the strength of them took end to end decode from
+    109.71 tok/s DOWN to 105.44 on the same card and prompt, with an unchanged
+    38 tok/s baseline in both runs and timings stable to 0.05 ms. It was a real
+    4 percent regression, not noise.
+
+    The isolated benchmark runs one shape in a tight loop, where 256 small
+    programs fill the card nicely. A decode step issues about 104 of these calls
+    back to back, and there the narrower tile costs more in per-kernel
+    scheduling than it wins in occupancy.
+
+    So this keeps the configuration that measured fastest END TO END. The
+    isolated sweep is kept in BENCH-DENSE-GEMV.py because it is useful for
+    understanding the kernel, not for choosing its launch parameters.
+    """
     if output_size <= 3072:
         return DENSE_GEMV_CONFIGS[1]
     if output_size <= 8192:
