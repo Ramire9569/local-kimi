@@ -76,5 +76,5 @@ being one.
 
 Publishing a speed claim against llama.cpp would have been refuted by the first
 person who ran `llama-bench`. Publishing this instead costs nothing that was
-真 true and buys the only thing that matters, which is that every other number
+true and buys the only thing that matters, which is that every other number
 here can be believed.
