@@ -150,6 +150,20 @@ class KDAAttention(nn.Module):
         self._fused_prepare = resolved
         return resolved
 
+    def _step_kernel(self):
+        """Return the fused recurrence kernel, or None if unavailable."""
+        cached = getattr(self, "_fused_step", -1)
+        if cached != -1:
+            return cached
+        try:
+            from engine.kernels.kda_step import kda_decode_step
+
+            resolved = kda_decode_step
+        except ImportError:
+            resolved = None
+        self._fused_step = resolved
+        return resolved
+
     def _decay_gate(self, raw_gate: torch.Tensor) -> torch.Tensor:
         biased = raw_gate.float() + self.dt_bias.float().view(
             self.num_heads, self.head_dim
@@ -259,33 +273,56 @@ class KDAAttention(nn.Module):
         if tuple(recurrent.shape) != recurrent_shape:
             raise ValueError("KDA recurrent state has an invalid shape")
 
-        outputs: list[torch.Tensor] = []
         scale = self.head_dim**-0.5
-        for token_index in range(sequence):
-            q_token = q[:, token_index]
-            k_token = k[:, token_index]
-            v_token = v[:, token_index]
-            decay_token = decay[:, token_index]
-            beta_token = beta[:, token_index]
 
-            candidate = recurrent * torch.exp(decay_token).unsqueeze(-1)
-            prediction = (candidate * k_token.unsqueeze(-1)).sum(dim=-2)
-            delta = v_token - prediction
-            candidate = candidate + (
-                beta_token.unsqueeze(-1).unsqueeze(-1)
-                * k_token.unsqueeze(-1)
-                * delta.unsqueeze(-2)
+        # One fused launch replaces the five whole-state passes below. It needs
+        # the state tensor itself so it can update in place under CUDA graph
+        # capture, which only holds when the cache is static and already float32.
+        step_kernel = self._step_kernel() if fused_prepare else None
+        if (
+            step_kernel is not None
+            and recurrent.dtype == torch.float32
+            and recurrent.data_ptr() == state.recurrent.data_ptr()
+        ):
+            fused_output = step_kernel(
+                recurrent,
+                q[:, 0],
+                k[:, 0],
+                v[:, 0],
+                decay[:, 0],
+                beta[:, 0],
+                scale=scale,
             )
-            output = (candidate * (q_token * scale).unsqueeze(-1)).sum(dim=-2)
-            if attention_mask is not None:
-                active = attention_mask[:, token_index].bool().view(batch, 1, 1)
-                recurrent = torch.where(active.unsqueeze(-1), candidate, recurrent)
-                output = torch.where(active, output, torch.zeros_like(output))
-            else:
-                recurrent = candidate
-            outputs.append(output)
+            output = fused_output.unsqueeze(1).to(hidden_states.dtype)
+        else:
+            outputs: list[torch.Tensor] = []
+            for token_index in range(sequence):
+                q_token = q[:, token_index]
+                k_token = k[:, token_index]
+                v_token = v[:, token_index]
+                decay_token = decay[:, token_index]
+                beta_token = beta[:, token_index]
 
-        output = torch.stack(outputs, dim=1).to(hidden_states.dtype)
+                candidate = recurrent * torch.exp(decay_token).unsqueeze(-1)
+                prediction = (candidate * k_token.unsqueeze(-1)).sum(dim=-2)
+                delta = v_token - prediction
+                candidate = candidate + (
+                    beta_token.unsqueeze(-1).unsqueeze(-1)
+                    * k_token.unsqueeze(-1)
+                    * delta.unsqueeze(-2)
+                )
+                output = (candidate * (q_token * scale).unsqueeze(-1)).sum(dim=-2)
+                if attention_mask is not None:
+                    active = attention_mask[:, token_index].bool().view(batch, 1, 1)
+                    recurrent = torch.where(
+                        active.unsqueeze(-1), candidate, recurrent
+                    )
+                    output = torch.where(active, output, torch.zeros_like(output))
+                else:
+                    recurrent = candidate
+                outputs.append(output)
+
+            output = torch.stack(outputs, dim=1).to(hidden_states.dtype)
         output_gate = self.g_b_proj(self.g_a_proj(hidden_states)).view(
             batch, sequence, self.num_heads, self.head_dim
         )
