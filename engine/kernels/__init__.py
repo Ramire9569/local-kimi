@@ -43,7 +43,28 @@ def _register_grouped() -> None:
 
 
 def _register_dense() -> None:
+    # Every variant of this op takes (activations, packed, scales). The existing
+    # w4a16_linear takes a W4A16Tensor instead, so it is adapted rather than
+    # registered directly. One signature per op is what lets the equivalence
+    # harness call the reference and a variant with identical arguments.
+    import torch
+
     from engine.quant.triton_w4a16 import w4a16_linear
+    from engine.quant.w4a16 import GROUP_SIZE, W4A16Tensor
+
+    def dense_reference(
+        activations: "torch.Tensor",
+        packed_weights: "torch.Tensor",
+        scales: "torch.Tensor",
+    ) -> "torch.Tensor":
+        encoded = W4A16Tensor(
+            packed=packed_weights,
+            scales=scales,
+            original_shape=(packed_weights.shape[0], packed_weights.shape[1] * 2),
+            original_dtype=torch.bfloat16,
+            group_size=GROUP_SIZE,
+        )
+        return w4a16_linear(activations, encoded)
 
     registry.register(
         W4A16_DENSE,
@@ -52,7 +73,7 @@ def _register_dense() -> None:
         requires_cuda=True,
         description="Original dense W4A16 GEMM. Measured at 10 percent of L40S "
         "peak bandwidth at decode shapes.",
-    )(w4a16_linear)
+    )(dense_reference)
 
     try:
         from engine.kernels.w4a16_dense_gemv import w4a16_dense_gemv

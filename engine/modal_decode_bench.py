@@ -64,10 +64,11 @@ def bench_variants(
 
     import torch
 
-    from engine.kernels import W4A16_GROUPED, registry
+    from engine.kernels import W4A16_DENSE, W4A16_GROUPED, registry
     from engine.klinear.generate import CUDAGraphDecodeRunner, prefill
     from engine.klinear.model import KLinearModel
     from engine.klinear.moe import KLinearMoE
+    from engine.klinear.quantized import W4A16Linear
 
     if not torch.cuda.is_available():
         raise RuntimeError("the decode benchmark requires CUDA")
@@ -85,19 +86,32 @@ def bench_variants(
     moe_modules = [m for m in model.modules() if isinstance(m, KLinearMoE)]
     if not moe_modules:
         raise RuntimeError("no MoE modules found; the checkpoint did not load as expected")
+    dense_modules = [
+        m
+        for m in model.modules()
+        if isinstance(m, W4A16Linear) and not m._retained_bf16
+    ]
 
     input_ids = torch.full((1, prompt_tokens), 1000, dtype=torch.long, device=device)
 
     results: list[dict] = []
     reference_ids: list[int] | None = None
 
-    for variant in variants:
-        # Swapping the variant requires clearing the cached callable on every
-        # MoE module, because it is resolved once at prepare time precisely so
-        # the decode loop does not pay for resolution.
-        registry.use(W4A16_GROUPED, variant)
+    for spec in variants:
+        # A spec is "grouped" or "grouped/dense". Swapping a variant requires
+        # clearing the callable cached on every module, because it is resolved
+        # once at prepare time precisely so the decode loop never pays for
+        # resolution.
+        grouped_name, _, dense_name = spec.partition("/")
+        dense_name = dense_name or "reference"
+
+        registry.use(W4A16_GROUPED, grouped_name)
         for module in moe_modules:
             module._grouped_kernel = registry.resolve(W4A16_GROUPED)
+        registry.use(W4A16_DENSE, dense_name)
+        for module in dense_modules:
+            module._dense_kernel = registry.resolve(W4A16_DENSE)
+        variant = spec
 
         torch.cuda.synchronize(device)
         torch.cuda.reset_peak_memory_stats(device)
@@ -136,7 +150,8 @@ def bench_variants(
         results.append(
             {
                 "variant": variant,
-                "active": registry.active(W4A16_GROUPED),
+                "active_grouped": registry.active(W4A16_GROUPED),
+                "active_dense": registry.active(W4A16_DENSE),
                 "median_ms_for_all_tokens": median_ms,
                 "ms_per_token": median_ms / new_tokens,
                 "tokens_per_second": 1000.0 * new_tokens / median_ms,
@@ -147,7 +162,7 @@ def bench_variants(
             }
         )
         print(
-            f"{variant:<16} {1000.0 * new_tokens / median_ms:8.2f} tok/s   "
+            f"{variant:<26} {1000.0 * new_tokens / median_ms:8.2f} tok/s   "
             f"identical={identical}"
         )
 
@@ -172,7 +187,7 @@ def bench_variants(
 
 @app.local_entrypoint()
 def main(
-    variants: str = "reference,triton_gemv",
+    variants: str = "reference/reference,triton_gemv/reference,triton_gemv/triton_gemv",
     prompt_tokens: int = 8,
     new_tokens: int = 64,
     repeats: int = 3,
@@ -185,12 +200,12 @@ def main(
     )
     print("\n" + "=" * 74)
     print(f"GPU {payload['gpu']}")
-    print(f"{'variant':<18}{'tok/s':>10}{'ms/tok':>10}{'speedup':>10}{'identical':>12}")
+    print(f"{'variant':<26}{'tok/s':>10}{'ms/tok':>10}{'speedup':>10}{'identical':>12}")
     for row in payload["results"]:
         identical = row["token_ids_identical_to_reference"]
         label = "reference" if identical is None else str(identical)
         print(
-            f"{row['variant']:<18}{row['tokens_per_second']:>10.2f}"
+            f"{row['variant']:<26}{row['tokens_per_second']:>10.2f}"
             f"{row['ms_per_token']:>10.2f}{row['speedup_over_first']:>10.2f}x"
             f"{label:>12}"
         )

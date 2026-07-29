@@ -90,6 +90,7 @@ class W4A16Linear(nn.Module):
         )
         self.register_parameter("weight", None)
         self._retained_bf16 = False
+        self._dense_kernel = None
 
     @classmethod
     def from_encoded(cls, encoded: W4A16Tensor) -> "W4A16Linear":
@@ -167,7 +168,16 @@ class W4A16Linear(nn.Module):
             return F.linear(hidden_states, self.weight)
         original_shape = hidden_states.shape[:-1]
         flattened = hidden_states.reshape(-1, self.in_features)
-        output = w4a16_linear(flattened, self.encoded)
+        kernel = self._dense_kernel
+        if kernel is None:
+            # Resolved once per module. This runs on the order of a hundred
+            # times per decode token, so re-reading KIMI_KERNELS here would put
+            # environment parsing inside the decode loop.
+            from engine.kernels import W4A16_DENSE, registry
+
+            kernel = registry.resolve(W4A16_DENSE)
+            self._dense_kernel = kernel
+        output = kernel(flattened, self.packed_weight, self.scales)
         return output.reshape(*original_shape, self.out_features)
 
     def extra_repr(self) -> str:
