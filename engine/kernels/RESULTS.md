@@ -155,6 +155,41 @@ mean KL falling from 6.73e-3 to 3.62e-3 and the largest logit difference from
 Confirmed after adopting it as the default: 113.83 tok/s in the ladder above,
 and 114.01 then 114.03 in a separate two-run check.
 
+## Three fusions lost, and they lost for the same reason
+
+Fusing kernels is the obvious way to make a decode loop faster, and on this
+workload it has failed three times in a row. The pattern is more useful than any
+of the individual results.
+
+| fusion | what it removed | result |
+|---|---|---|
+| gate and up projections | 26 launches per token, one activation re-read | 1.5% slower end to end |
+| narrow dense tile | nothing; more, smaller programs | 7.9% slower end to end |
+| down projection with route combination | 130 launches per token, 81 KiB per layer | 13.9% slower in isolation |
+
+The third is the clearest case. It folds the route-weighted sum into the down
+projection, so the `[1, 9, 2304]` per-route tensor never reaches global memory
+and six launches per layer become one. Measured in isolation at the real shapes:
+132.4 microseconds against 114.1 for the current sequence.
+
+**These kernels are occupancy limited, not launch limited and not traffic
+limited.** Every one of these fusions holds an accumulator alive across a longer
+loop, which raises register pressure and cuts the number of resident warps. On a
+batch-1 INT4 decode the machine is short of parallelism, not short of bandwidth,
+so trading occupancy for saved launches loses.
+
+The original profile said this on day one: CUDA graph capture had already
+removed launch overhead, and all 2,236 elementwise launches together cost 3.4 ms
+of a 28.85 ms token. Launch count was never the bottleneck. Three fusions were
+built before that lesson fully landed.
+
+`engine/kernels/moe_combine.py` and its benchmark stay in the repository so the
+result is reproducible and nobody rebuilds it to rediscover that it loses. It is
+not registered and not wired. The end to end gate was not run for it: isolation
+has misled this project twice, but both times it was optimistic about a fusion,
+and a 14 percent isolated loss would have to gain parallelism under competition
+to flip, which is backwards.
+
 ## Two fusions that were built, measured, and left switched off
 
 **Fusing the gate and up projections does not pay.** The expert path calls the
