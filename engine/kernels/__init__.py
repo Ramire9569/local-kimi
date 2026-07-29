@@ -2,8 +2,13 @@
 
 Kernel variants are registered here rather than inside each kernel module, so
 that importing one module cannot decide what the engine runs. Importing this
-package registers every variant, and `registry.resolve` picks between them from
-KIMI_KERNELS or a programmatic override, defaulting to the reference.
+package registers every variant and selects the shipped default.
+
+Selection order is: a programmatic override, then KIMI_KERNELS, then the shipped
+default set below, then the reference. The shipped-default tier exists because
+without it the fast kernels were only reachable by setting an environment
+variable, so an ordinary run got the slow reference path while the benchmarks,
+which select variants explicitly, reported the fast one.
 
 Registration tolerates a missing Triton: on a CPU-only box the kernel modules
 still import, their entry points raise when called, and `requires_cuda=True`
@@ -41,6 +46,7 @@ def _register_grouped() -> None:
         description="Batch-1 grouped GEMV with K-contiguous weight reads. "
         "Measured at 51 percent of L40S peak, 5.95x the reference.",
     )(grouped_w4a16_gemv)
+    registry.set_default(W4A16_GROUPED, "triton_gemv")
 
     # One variant per launch configuration, so the choice can be swept END TO
     # END in a single process. Two separate tuning decisions on this project
@@ -115,6 +121,7 @@ def _register_dense() -> None:
         requires_cuda=True,
         description="Batch-1 dense GEMV with K-contiguous weight reads.",
     )(w4a16_dense_gemv)
+    registry.set_default(W4A16_DENSE, "triton_gemv")
 
     # The same kernel with the launch configuration that won the isolated sweep
     # by a wide margin. Registered as its own variant so the two can be compared

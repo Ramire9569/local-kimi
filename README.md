@@ -92,11 +92,25 @@ while throughput rose.
 ![Memory headroom](docs/figures/memory-headroom.png)
 
 Kernels live behind a registry in [`engine/kernels/registry.py`](engine/kernels/registry.py).
-Each operation has one reference implementation and any number of variants, a
-variant is selected with the `KIMI_KERNELS` environment variable, and
+Each operation has one reference implementation and any number of variants, and
 [`engine/kernels/equivalence.py`](engine/kernels/equivalence.py) compares every
 variant against the reference. That is how a kernel gets swapped in without
 guessing whether it changed the model.
+
+**The fast kernels are on by default.** Nothing needs configuring to get the
+number above. To go back to the reference path, or to try a variant that is
+registered but switched off, set `KIMI_KERNELS`:
+
+```bash
+KIMI_KERNELS=w4a16_grouped=reference,w4a16_dense=reference   # the slow path
+KIMI_KERNELS=w4a16_swiglu=fused                              # a fusion that measured slower
+```
+
+This ordering was a bug at first. The variants were registered but nothing
+selected them, so an ordinary run silently got the reference path while the
+benchmarks, which select variants explicitly, reported the fast one.
+`tests/test_kernel_defaults.py` now pins the shipped default so that cannot
+happen again.
 
 Full numbers, including what we built and chose not to ship, are in
 [`engine/kernels/RESULTS.md`](engine/kernels/RESULTS.md).

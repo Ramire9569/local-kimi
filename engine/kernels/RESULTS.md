@@ -69,6 +69,26 @@ The split by contribution, against the original 35.76:
 Peak reserved memory fell from 29.56 GiB to 27.63 GiB, so the 32 GiB budget
 holds with more room than before rather than less.
 
+## The number an ordinary run gets
+
+The fast kernels were registered as variants, but nothing selected them. Every
+benchmark set variants explicitly, so they measured and reported the fast path
+while `registry.active` returned "reference" for anyone who simply ran the
+engine. The published figure described a path no ordinary run took.
+
+The registry now has a shipped-default tier that sits below KIMI_KERNELS, so the
+fast kernels are on without configuration and can still be overridden. Measured
+with nothing set, and with the default run twice for repeatability:
+
+| variant | tok/s |
+|---|---:|
+| **default, nothing configured** | **113.77** |
+| reference everywhere | 38.01 |
+| default again | 113.93 |
+
+`tests/test_kernel_defaults.py` asserts the default rather than what is reachable
+under configuration, which is the distinction that was missed.
+
 ## Equivalence, stated honestly
 
 **These kernels do not produce bit-identical output.** An earlier version of the

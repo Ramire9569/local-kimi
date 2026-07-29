@@ -27,6 +27,7 @@ class KernelVariant:
 
 _REGISTRY: dict[str, dict[str, KernelVariant]] = {}
 _OVERRIDES: dict[str, str] = {}
+_DEFAULTS: dict[str, str] = {}
 _MISSING = object()
 
 
@@ -129,6 +130,24 @@ def _environment_overrides() -> dict[str, str]:
     return selected
 
 
+def set_default(op: str, variant: str) -> None:
+    """Choose the variant used when nothing else selects one.
+
+    This is the SHIPPED choice, and it sits below KIMI_KERNELS so a user can
+    still override it. Without this tier the only fallback was the reference
+    implementation, which meant the fast kernels were off unless the caller set
+    an environment variable. The benchmarks set variants explicitly, so they
+    measured a path an ordinary run never took.
+    """
+    _variant_of(op, variant)
+    _DEFAULTS[op] = variant
+
+
+def default_of(op: str) -> str:
+    """Return the shipped default variant name for an operation."""
+    return _DEFAULTS.get(op, reference_of(op).name)
+
+
 def _selected_variant(op: str) -> KernelVariant:
     if op not in _REGISTRY:
         raise KeyError(f"operation {op!r} has no registered kernel variants")
@@ -138,6 +157,9 @@ def _selected_variant(op: str) -> KernelVariant:
     environment_variant = _environment_overrides().get(op)
     if environment_variant is not None:
         return _variant_of(op, environment_variant)
+    shipped = _DEFAULTS.get(op)
+    if shipped is not None:
+        return _variant_of(op, shipped)
     return reference_of(op)
 
 
@@ -156,6 +178,11 @@ def use(op: str, variant: str) -> None:
     """Set a programmatic variant override for an operation."""
     _variant_of(op, variant)
     _OVERRIDES[op] = variant
+
+
+def clear_override(op: str) -> None:
+    """Drop any programmatic override so selection falls back to the default."""
+    _OVERRIDES.pop(op, None)
 
 
 @contextmanager

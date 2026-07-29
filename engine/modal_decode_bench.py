@@ -112,14 +112,22 @@ def bench_variants(
         # clearing the callable cached on every module, because it is resolved
         # once at prepare time precisely so the decode loop never pays for
         # resolution.
-        parts = spec.split("/")
-        grouped_name = parts[0]
-        dense_name = parts[1] if len(parts) > 1 and parts[1] else "reference"
-        swiglu_name = parts[2] if len(parts) > 2 and parts[2] else "reference"
+        # The literal spec "default" touches nothing, so it measures what an
+        # ordinary run gets. Every other spec selects variants explicitly, which
+        # is how a benchmark once reported the fast path while the shipped
+        # default was still the slow reference.
+        if spec == "default":
+            for op in (W4A16_GROUPED, W4A16_DENSE, W4A16_SWIGLU):
+                registry.clear_override(op)
+        else:
+            parts = spec.split("/")
+            grouped_name = parts[0]
+            dense_name = parts[1] if len(parts) > 1 and parts[1] else "reference"
+            swiglu_name = parts[2] if len(parts) > 2 and parts[2] else "reference"
+            registry.use(W4A16_GROUPED, grouped_name)
+            registry.use(W4A16_DENSE, dense_name)
+            registry.use(W4A16_SWIGLU, swiglu_name)
 
-        registry.use(W4A16_GROUPED, grouped_name)
-        registry.use(W4A16_DENSE, dense_name)
-        registry.use(W4A16_SWIGLU, swiglu_name)
         for module in moe_modules:
             module._grouped_kernel = registry.resolve(W4A16_GROUPED)
             module._swiglu_kernel = registry.resolve(W4A16_SWIGLU)
