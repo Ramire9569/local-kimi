@@ -93,5 +93,35 @@ is 0.2613 relative Frobenius on the shared expert projections. That is the same
 tensor class that was worst under INT4, and it is roughly 2.3 times the INT4
 error, which matches the isolated codec measurement.
 
-**Not yet done:** the artifact has not been loaded, so throughput and output
-quality on a 24 GB card are unmeasured. Fitting is proven; running is not.
+## What loading it actually proved, and what it did not
+
+An attempt to load the W3A16 artifact on an A10G failed after 53 seconds with
+`AttributeError: 'NoneType' object has no attribute 'shape'`. That is a wiring
+gap, not an out-of-memory error.
+
+`engine/klinear/weights.py` recognises a W3A16 checkpoint and can read it.
+`engine/klinear/quantized3.py` provides `W3A16Linear`. But `model.py`, `moe.py`
+and `layer.py` contain no reference to W3A16 at all, so model construction never
+builds a W3A16 linear and hands back None. Two further pieces are needed:
+constructing W3A16 linears when the checkpoint kind is W3A16, and a grouped
+W3A16 expert bank equivalent to `prepare_grouped_w4a16`.
+
+**A correction to the table above.** It compared GiB of weights against a card's
+advertised GB and assumed roughly 2.5 GiB of headroom. Measured usable memory is
+smaller than the advertised figure, and the margin is thinner than stated:
+
+| card | usable | free after 21.20 GiB of weights |
+|---|---:|---:|
+| A10G, measured by torch | 22.1 GiB | 0.90 GiB, too tight |
+| RTX 3090 | ~23.6 GiB | 2.40 GiB, tight but plausible |
+| RTX 4090 | ~23.6 GiB | 2.40 GiB, tight but plausible |
+| RTX 5090 | ~31.8 GiB | 10.60 GiB, comfortable |
+
+The A10G is therefore a poor proxy for a 3090 or 4090: it has roughly 1.5 GiB
+less usable memory than either. Proving the 3090 and 4090 case needs one of
+those cards, or the group-64 FP8-scale variant at 19.22 GiB, which would restore
+a real margin.
+
+**Status, stated plainly.** The artifact exists and is 21.20 GiB. It has never
+been loaded. Throughput and output quality under INT3 are unmeasured. Whether it
+fits a 3090 or 4090 in practice is arithmetic, not observation.

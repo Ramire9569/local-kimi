@@ -101,9 +101,11 @@ The 113.83 tokens per second figure is an L40S. **A 3090 or 4090 cannot load
 the INT4 artifact.**
 
 An INT3 artifact now exists at **21.20 GiB**, built on an H100 from the original
-BF16 weights, which does fit a 24 GB card. It has not been loaded yet, so
-throughput and output quality on that card are unmeasured: fitting is proven,
-running is not. See [`engine/CONSUMER-GPU.md`](engine/CONSUMER-GPU.md).
+BF16 weights. It has **never been loaded**: an attempt failed on a wiring gap,
+because the model construction path does not yet build W3A16 linears. Throughput
+and output quality under INT3 are unmeasured, and whether it fits a 3090 or 4090
+in practice is arithmetic rather than observation. See
+[`engine/CONSUMER-GPU.md`](engine/CONSUMER-GPU.md).
 
 ## How the engine got faster
 
