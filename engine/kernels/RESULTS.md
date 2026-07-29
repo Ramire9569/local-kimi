@@ -40,30 +40,31 @@ which is 940 to 40 across the twenty KDA layers.
 
 ## End to end
 
-Greedy, one stream, 17-token prompt, 64 generated tokens, three repeats, median
-reported. Timings varied by under 0.05 ms across repeats.
+Greedy, one stream, 17-token prompt, 64 generated tokens, five repeats, median
+reported. Repeat timings varied by under 0.15 ms out of 560, and re-running the
+same configuration in the same container reproduced to 0.02 percent.
 
 | engine | tok/s | ms per token | against original |
 |---|---:|---:|---:|
 | original, before any of this work | 35.76 | 27.96 | 1.00x |
-| KDA fusions only | 38.04 | 26.29 | 1.06x |
-| KDA plus grouped GEMV | 61.88 | 16.16 | 1.73x |
-| **KDA plus grouped and dense GEMV** | **109.51** | **9.13** | **3.06x** |
+| KDA fusions only | 37.98 | 26.33 | 1.06x |
+| KDA plus grouped GEMV | 63.10 | 15.85 | 1.76x |
+| **KDA plus grouped and dense GEMV** | **113.83** | **8.78** | **3.18x** |
 
 Read the middle rows carefully. The KDA fusions are applied whenever the decode
 shape matches and are not switched by the W4A16 variant selector, so they are
 present in every row including the one labelled reference. That is why the
-baseline of the final sweep reads 38.04 rather than 35.76. The 3.06x figure is
+baseline of the final sweep reads 37.98 rather than 35.76. The 3.18x figure is
 against the original engine measured before any kernel in this directory
-existed; the same sweep read against its own baseline gives 2.88x.
+existed; the same sweep read against its own baseline gives 3.00x.
 
 The split by contribution, against the original 35.76:
 
 | change | tok/s after | share of the total gain |
 |---|---:|---:|
-| KDA preparation and recurrence fusion | 38.04 | 3% |
-| grouped W4A16 GEMV | 61.88 | 32% |
-| dense W4A16 GEMV | 109.51 | 65% |
+| KDA preparation and recurrence fusion | 37.98 | 3% |
+| grouped W4A16 GEMV | 63.10 | 32% |
+| dense W4A16 GEMV | 113.83 | 65% |
 
 Peak reserved memory fell from 29.56 GiB to 27.63 GiB, so the 32 GiB budget
 holds with more room than before rather than less.
@@ -89,8 +90,10 @@ produced at each step.
 | kernels | top-1 agreement | max absolute logit difference | mean KL |
 |---|---:|---:|---:|
 | reference against itself | 32/32, 100% | 0.00000 | 0.0 |
-| grouped GEMV | 30/32, 93.8% | 1.56250 | 3.50e-3 nats |
-| grouped and dense GEMV | 31/32, 96.9% | 1.52734 | 3.55e-3 nats |
+| grouped GEMV, earlier config | 30/32, 93.8% | 1.56250 | 3.50e-3 nats |
+| grouped and dense, earlier config | 31/32, 96.9% | 1.52734 | 3.55e-3 nats |
+| **shipped, `n128_k32_s4`** | **31/32, 96.9%** | **1.50000** | **3.62e-3 nats** |
+| the config it replaced | 31/32, 96.9% | 1.78125 | 6.73e-3 nats |
 
 For scale, `engine/accuracy/RESULTS.md` records that the INT4 quantisation
 itself costs 85.16 percent top-1 agreement and 0.0555 nats of mean KL against
@@ -99,6 +102,38 @@ divergence that quantising the model already introduced.
 
 That is the claim this work supports: the fused kernels are a much smaller
 perturbation than the quantisation already applied, not that they are exact.
+
+## Choosing the launch configuration by sweeping the engine
+
+After two tuning decisions won an isolated benchmark and lost in the engine, the
+grouped kernel's configuration was chosen differently: every candidate was
+registered as its own variant and swept inside one decode process, with the
+incumbent measured first and last to expose its own repeatability.
+
+| variant, one container, 5 repeats each | tok/s | output matches incumbent |
+|---|---:|:---:|
+| incumbent, branch on estimated wave count | 109.38 | reference |
+| pinned `n32_k64_s1` | 110.16 | yes |
+| pinned `n64_k64_s1` | 103.67 | yes |
+| pinned `n64_k64_s2` | 112.68 | no |
+| **pinned `n128_k32_s4`** | **113.43** | no |
+| pinned `n32_k128_s1` | 112.97 | no |
+| incumbent again | 109.37 | yes |
+
+The incumbent reproduces to 0.01 percent, so a 3.7 percent gap is real. The
+incumbent branched on an estimate of how many waves the grid would fill, which
+was never tested; one configuration for every shape beats it.
+
+The three fastest change the output, because split-K and a different K block
+change the order of the reduction. That is not disqualifying on its own, since
+none of these kernels is bit-identical to the reference anyway, but it does mean
+the winner needed its own equivalence measurement rather than an assumption.
+That measurement came out in its favour: the same 31 of 32 top-1 choices, with
+mean KL falling from 6.73e-3 to 3.62e-3 and the largest logit difference from
+1.78 to 1.50. It is both faster and closer to the reference.
+
+Confirmed after adopting it as the default: 113.83 tok/s in the ladder above,
+and 114.01 then 114.03 in a separate two-run check.
 
 ## Two fusions that were built, measured, and left switched off
 
