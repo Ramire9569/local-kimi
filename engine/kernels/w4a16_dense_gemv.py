@@ -38,6 +38,13 @@ DENSE_GEMV_CONFIGS = (
     DenseGemvConfig("n32_k128_s2_w8_st2", 32, 128, 2, 8, 2),
     DenseGemvConfig("n64_k64_s1_w4_st3", 64, 64, 1, 4, 3),
     DenseGemvConfig("n128_k32_s1_w8_st3", 128, 32, 1, 8, 3),
+    # Added after the first sweep. Every 32-wide candidate above also carried
+    # split-K, so a narrow tile WITHOUT a partial-buffer reduction was never
+    # measured. It is the config that won the grouped sweep, and at N=4096 it
+    # yields 128 programs against 64 for the 64-wide tile, which matters on a
+    # 142-SM card.
+    DenseGemvConfig("n32_k64_s1_w4_st3", 32, 64, 1, 4, 3),
+    DenseGemvConfig("n16_k64_s1_w4_st3", 16, 64, 1, 4, 3),
 )
 
 

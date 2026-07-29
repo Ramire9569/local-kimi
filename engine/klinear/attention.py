@@ -128,6 +128,28 @@ class KDAAttention(nn.Module):
         )
         self.o_proj = projection("o_proj", projection_size, hidden_size)
 
+    def _prepare_kernels(self):
+        """Return the fused decode preparation kernels, or None if unavailable.
+
+        Resolved once and cached. This is consulted on every KDA layer of every
+        decoded token, so importing or re-resolving here would put avoidable
+        Python work in the hottest loop in the engine.
+        """
+        cached = getattr(self, "_fused_prepare", -1)
+        if cached != -1:
+            return cached
+        try:
+            from engine.kernels.kda_prepare import (
+                fused_kda_gates,
+                fused_short_conv_triple,
+            )
+
+            resolved = (fused_short_conv_triple, fused_kda_gates)
+        except ImportError:
+            resolved = None
+        self._fused_prepare = resolved
+        return resolved
+
     def _decay_gate(self, raw_gate: torch.Tensor) -> torch.Tensor:
         biased = raw_gate.float() + self.dt_bias.float().view(
             self.num_heads, self.head_dim
@@ -149,32 +171,76 @@ class KDAAttention(nn.Module):
         if attention_mask is not None and tuple(attention_mask.shape) != (batch, sequence):
             raise ValueError("KDA attention_mask does not match the input shape")
 
-        q, q_state = self.q_conv1d(
-            self.q_proj(hidden_states),
-            state.q_conv if state is not None else None,
-            attention_mask,
+        # The fused decode path replaces 47 small launches per layer with 2. It
+        # applies only to the exact shape it was written for: one token, a fixed
+        # static cache, no padding mask, on CUDA. Every other case, including
+        # prefill, falls through to the eager path below unchanged.
+        fused_prepare = (
+            sequence == 1
+            and attention_mask is None
+            and state is not None
+            and state.is_static
+            and hidden_states.device.type == "cuda"
+            and self._prepare_kernels() is not None
         )
-        k, k_state = self.k_conv1d(
-            self.k_proj(hidden_states),
-            state.k_conv if state is not None else None,
-            attention_mask,
-        )
-        v, v_state = self.v_conv1d(
-            self.v_proj(hidden_states),
-            state.v_conv if state is not None else None,
-            attention_mask,
-        )
+        states_updated_in_place = False
+        if fused_prepare:
+            fused_conv, fused_gates = self._prepare_kernels()
+            q, k, v = fused_conv(
+                self.q_proj(hidden_states),
+                self.k_proj(hidden_states),
+                self.v_proj(hidden_states),
+                state.q_conv,
+                state.k_conv,
+                state.v_conv,
+                self.q_conv1d.weight,
+                self.k_conv1d.weight,
+                self.v_conv1d.weight,
+            )
+            q_state, k_state, v_state = state.q_conv, state.k_conv, state.v_conv
+            states_updated_in_place = True
+            raw_decay = self.f_b_proj(self.f_a_proj(hidden_states)).view(
+                batch, sequence, self.num_heads, self.head_dim
+            )
+            decay, beta, q, k = fused_gates(
+                raw_decay,
+                self.dt_bias,
+                self.A_log,
+                self.b_proj(hidden_states),
+                q,
+                k,
+                num_heads=self.num_heads,
+                head_dim=self.head_dim,
+                eps=1e-6,
+            )
+            v = v.view(batch, sequence, self.num_heads, self.head_dim).float()
+        else:
+            q, q_state = self.q_conv1d(
+                self.q_proj(hidden_states),
+                state.q_conv if state is not None else None,
+                attention_mask,
+            )
+            k, k_state = self.k_conv1d(
+                self.k_proj(hidden_states),
+                state.k_conv if state is not None else None,
+                attention_mask,
+            )
+            v, v_state = self.v_conv1d(
+                self.v_proj(hidden_states),
+                state.v_conv if state is not None else None,
+                attention_mask,
+            )
 
-        raw_decay = self.f_b_proj(self.f_a_proj(hidden_states)).view(
-            batch, sequence, self.num_heads, self.head_dim
-        )
-        decay = self._decay_gate(raw_decay)
-        beta = torch.sigmoid(self.b_proj(hidden_states).float())
-        q = q.view(batch, sequence, self.num_heads, self.head_dim).float()
-        k = k.view(batch, sequence, self.num_heads, self.head_dim).float()
-        v = v.view(batch, sequence, self.num_heads, self.head_dim).float()
-        q = q * torch.rsqrt(q.square().sum(dim=-1, keepdim=True) + 1e-6)
-        k = k * torch.rsqrt(k.square().sum(dim=-1, keepdim=True) + 1e-6)
+            raw_decay = self.f_b_proj(self.f_a_proj(hidden_states)).view(
+                batch, sequence, self.num_heads, self.head_dim
+            )
+            decay = self._decay_gate(raw_decay)
+            beta = torch.sigmoid(self.b_proj(hidden_states).float())
+            q = q.view(batch, sequence, self.num_heads, self.head_dim).float()
+            k = k.view(batch, sequence, self.num_heads, self.head_dim).float()
+            v = v.view(batch, sequence, self.num_heads, self.head_dim).float()
+            q = q * torch.rsqrt(q.square().sum(dim=-1, keepdim=True) + 1e-6)
+            k = k * torch.rsqrt(k.square().sum(dim=-1, keepdim=True) + 1e-6)
 
         recurrent_shape = (
             batch,
@@ -226,9 +292,13 @@ class KDAAttention(nn.Module):
         output = self.o_norm(output, output_gate)
         output = self.o_proj(output.reshape(batch, sequence, self.projection_size))
         if state is not None and state.is_static:
-            state.q_conv.copy_(q_state)
-            state.k_conv.copy_(k_state)
-            state.v_conv.copy_(v_state)
+            if not states_updated_in_place:
+                # The fused convolution already wrote these buffers in place, so
+                # copying would be a tensor onto itself: three wasted launches
+                # per KDA layer, which is exactly what the fusion removed.
+                state.q_conv.copy_(q_state)
+                state.k_conv.copy_(k_state)
+                state.v_conv.copy_(v_state)
             state.recurrent.copy_(recurrent)
             final_state = state
         else:
