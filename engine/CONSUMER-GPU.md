@@ -71,9 +71,27 @@ costs against the BF16 checkpoint: 85.16 percent next-token top-1 agreement,
 0.0555 nats of mean KL, and a 0.81 percent rise in perplexity. INT3 will be
 worse. Whether it is acceptable is a decision to make against measured numbers.
 
-## Status
+## Status: the INT3 artifact exists
 
-`engine/quant/w3a16.py` and `engine/kernels/w3a16_gemv.py` implement the codec
-and kernel. The checkpoint has **not** been requantised, so nothing here has run
-on a real 24 GB card yet. Until it has, the honest statement is that this
-project runs on a 32 GB card and above.
+Built on one NVIDIA H100 from the original BF16 checkpoint, not from the INT4
+artifact, so the two quantisation errors do not compound.
+
+| | |
+|---|---:|
+| source BF16 tensor storage | 91.50 GiB |
+| **W3A16 output** | **21.20 GiB** |
+| compression against BF16 | 4.32x |
+| tensors quantised | 20,150 |
+| tensors retained in BF16 | 343 |
+| fits a 24 GB card | **yes** |
+
+The prediction above was 21.28 GiB and the artifact is 21.20 GiB, so the
+arithmetic held.
+
+Worst round-trip error, measured on the real tensors rather than random data,
+is 0.2613 relative Frobenius on the shared expert projections. That is the same
+tensor class that was worst under INT4, and it is roughly 2.3 times the INT4
+error, which matches the isolated codec measurement.
+
+**Not yet done:** the artifact has not been loaded, so throughput and output
+quality on a 24 GB card are unmeasured. Fitting is proven; running is not.

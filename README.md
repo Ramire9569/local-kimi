@@ -6,7 +6,30 @@
 
 Point any coding agent at a local Kimi model and it works: `k3` translates between the agent's protocol and the model's.
 
-![How a coding agent reaches the local engine](docs/figures/client-path.png)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-supported-D97757?logo=anthropic&logoColor=white)](docs/CLAUDE-CODE.md)
+[![Codex](https://img.shields.io/badge/Codex-supported-412991?logo=openai&logoColor=white)](docs/CODEX.md)
+[![OpenAI SDK](https://img.shields.io/badge/OpenAI_SDK-supported-412991?logo=openai&logoColor=white)](docs/OPENAI-SDK.md)
+[![Aider](https://img.shields.io/badge/Aider-supported-14B8A6)](k3/presets.py)
+[![Cline](https://img.shields.io/badge/Cline-supported-6366F1)](k3/presets.py)
+[![opencode](https://img.shields.io/badge/opencode-supported-64748B)](k3/presets.py)
+
+```mermaid
+flowchart LR
+    CC["Claude Code"] -- "Anthropic Messages" --> K3
+    CX["Codex"] -- "OpenAI Responses" --> K3
+    OT["Aider, Cline, opencode"] -- "OpenAI Chat" --> K3
+
+    K3{{"k3<br/>detects the client per request<br/>translates all three dialects<br/>tool calls: hermes, json, kimi,<br/>kimi_k3, pythonic, passthrough<br/>restores reasoning across turns"}}
+
+    K3 -- "OpenAI Chat" --> EN["local engine<br/>Kimi-Linear-48B<br/>selective INT4<br/>fused decode kernels"]
+
+    classDef client fill:#0d1117,stroke:#30363d,color:#c9d1d9
+    classDef bridge fill:#1f6feb,stroke:#388bfd,color:#ffffff
+    classDef engine fill:#238636,stroke:#2ea043,color:#ffffff
+    class CC,CX,OT client
+    class K3 bridge
+    class EN engine
+```
 
 ## The problem
 
@@ -75,11 +98,12 @@ CUDA context.
 | L40S, A100, H100 | 48 GB and up | yes, the L40S is what was measured |
 
 The 113.83 tokens per second figure is an L40S. **A 3090 or 4090 cannot load
-this yet.** Fitting a 24 GB card needs the expert weights at three bits rather
-than four, which brings the artifact to 21.28 GiB. That codec is implemented in
-[`engine/quant/w3a16.py`](engine/quant/w3a16.py) but the checkpoint has not been
-requantised, so it is not usable today. See
-[`engine/CONSUMER-GPU.md`](engine/CONSUMER-GPU.md) for the arithmetic.
+the INT4 artifact.**
+
+An INT3 artifact now exists at **21.20 GiB**, built on an H100 from the original
+BF16 weights, which does fit a 24 GB card. It has not been loaded yet, so
+throughput and output quality on that card are unmeasured: fitting is proven,
+running is not. See [`engine/CONSUMER-GPU.md`](engine/CONSUMER-GPU.md).
 
 ## How the engine got faster
 
