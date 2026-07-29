@@ -40,15 +40,32 @@ which is 940 to 40 across the twenty KDA layers.
 
 ## End to end
 
-Greedy, one stream, 64 generated tokens, three repeats, median reported.
+Greedy, one stream, 17-token prompt, 64 generated tokens, three repeats, median
+reported. Timings varied by under 0.05 ms across repeats.
 
-| kernels | tok/s | ms per token | speedup |
+| engine | tok/s | ms per token | against original |
 |---|---:|---:|---:|
-| reference everywhere | 35.76 | 27.96 | 1.00x |
-| grouped GEMV only | 55.96 | 17.87 | 1.57x |
-| grouped and dense GEMV | 92.53 | 10.81 | **2.59x** |
+| original, before any of this work | 35.76 | 27.96 | 1.00x |
+| KDA fusions only | 38.04 | 26.29 | 1.06x |
+| KDA plus grouped GEMV | 61.88 | 16.16 | 1.73x |
+| **KDA plus grouped and dense GEMV** | **109.71** | **9.11** | **3.07x** |
 
-Peak reserved memory fell from 29.56 GiB to 27.61 GiB, so the 32 GiB budget
+Read the middle rows carefully. The KDA fusions are applied whenever the decode
+shape matches and are not switched by the W4A16 variant selector, so they are
+present in every row including the one labelled reference. That is why the
+baseline of the final sweep reads 38.04 rather than 35.76. The 3.07x figure is
+against the original engine measured before any kernel in this directory
+existed; the same sweep read against its own baseline gives 2.88x.
+
+The split by contribution, against the original 35.76:
+
+| change | tok/s after | share of the total gain |
+|---|---:|---:|
+| KDA preparation and recurrence fusion | 38.04 | 3% |
+| grouped W4A16 GEMV | 61.88 | 32% |
+| dense W4A16 GEMV | 109.71 | 65% |
+
+Peak reserved memory fell from 29.56 GiB to 27.63 GiB, so the 32 GiB budget
 holds with more room than before rather than less.
 
 ## Equivalence, stated honestly

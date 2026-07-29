@@ -109,7 +109,13 @@ def compare(
             output = decode(model, token, state)
             state = output.state
             logits = output.logits[:, -1]
-        return torch.stack(collected), taken
+        stacked = torch.stack(collected)
+        # Free this run's decode state before the next variant allocates its
+        # own. The model alone is 28.8 GB, so four live states from four calls
+        # exhaust the card and fail as an allocator OOM partway through.
+        del state, output, logits
+        torch.cuda.empty_cache()
+        return stacked, taken
 
     reference_logits, reference_taken = run(variants[0], None)
 

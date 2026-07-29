@@ -1,6 +1,9 @@
 # Decode throughput, measured, with output equivalence proved
 
-Produced by `engine/modal_decode_bench.py` on one NVIDIA L40S, loading the
+Superseded by `engine/kernels/RESULTS.md`, which records 109.71 tok/s after
+the fused kernels landed. This file describes the state before that work.
+
+Produced on one NVIDIA L40S, loading the
 selective INT4 artifact with the process hard-capped at 32 GiB. 8-token prompt,
 64 generated tokens, greedy, 3 repeats.
 
@@ -68,6 +71,10 @@ floor for this configuration, not a comfortable target, and reduce
 - **Not a quality claim.** `engine/accuracy/RESULTS.md` records what INT4 costs.
 
 ## Reproducing
+
+The runner that produced this table was never committed. The current
+benchmark is `engine/modal_decode_bench.py`, which measures kernel variants
+against each other and gates on output equivalence:
 
 ```bash
 modal run engine/modal_decode_bench.py
