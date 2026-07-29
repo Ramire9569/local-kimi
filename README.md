@@ -184,6 +184,37 @@ uv run python scripts/make_figures.py
 
 This project is built and maintained by [RunInfra](https://runinfra.ai/).
 
+### Own the full Kimi K3, on your own infrastructure
+
+This repository is the open half of the work: one model, one GPU, every number
+measured in public.
+
+The other half is [**K3Turbo**](https://runinfra.ai/catalog/kimi-k3-b300x8-k3turbo),
+a commercial package that runs the **full 2.8 trillion parameter Kimi K3** on
+hardware you own. No API, no per-token billing, no prompts leaving your network.
+It is closed source and it ships as a deployable unit rather than a research
+repository:
+
+| | |
+|---|---|
+| Engine | A pinned vLLM build, compiled from source, with the serving configuration already tuned |
+| Proof | A benchmark receipt with measured latency, not a marketing figure |
+| Verification | A weight verifier that checks what you deploy against a pinned commit digest, so the bytes you run are the bytes that were measured |
+| Deployment | Docker Compose, Kubernetes, RunPod and Modal recipes |
+| Weights | Fetched separately from Hugging Face, never redistributed |
+
+**Be clear about the hardware.** Kimi K3 is 2.8 trillion parameters. K3Turbo
+targets an **8x B300 node**, 288 GB per GPU and 2304 GB per node in a single
+NVLink domain. It does not fit an 8x B200 node, and nothing about it runs on a
+consumer card. The published measurements are text-only on coding prompts of 34
+to 36 thousand tokens; the vision tower is uncharacterised.
+
+If you want the largest open model in the world running inside your own walls,
+that is what it is for. If you want a 48B model on a single GPU, that is this
+repository, and it is free.
+
+[**See the listing →**](https://runinfra.ai/catalog/kimi-k3-b300x8-k3turbo)
+
 ## Repository contents
 
 | Path | Contents |
