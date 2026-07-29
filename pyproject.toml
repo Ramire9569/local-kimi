@@ -99,12 +99,15 @@ select = ["E4", "E7", "E9", "F", "I"]
 
 [tool.ruff.lint.per-file-ignores]
 # Ruff reports F821 for names that are plainly bound earlier in the same
-# function and that resolve at runtime: this benchmark ran on an L40S and
-# printed the rows produced by the flagged lines. Scoped to the one file rather
-# than disabling the rule, so a real undefined name elsewhere still fails.
+# function and resolve fine at runtime. The trigger is a `del` of that name
+# later in the enclosing scope: ruff then treats every closure reference to it
+# as unbound, including ones that execute before the del. These benchmarks all
+# free large GPU tensors with `del` between phases, which is why they all hit
+# it. Scoped per file so a genuine undefined name elsewhere still fails.
 "engine/kernels/BENCH-DENSE-GEMV.py" = ["F821"]
 "engine/kernels/BENCH-GEMV.py" = ["F821"]
 "engine/kernels/BENCH-W3A16.py" = ["F821", "E402"]
+"engine/statecache/BENCH-STATECACHE.py" = ["F821"]
 # Existing debt in files owned by other lanes. Remove an entry when its owner fixes it.
 "k3/cli.py" = ["I001"]
 "k3/detect.py" = ["F541"]

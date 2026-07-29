@@ -101,7 +101,7 @@ def quantize_int3(overwrite: bool = False, group_size: int = GROUP_SIZE) -> dict
                 )
 
     plan = build_klinear_quantization_plan(tuple(specs))
-    decisions = {decision.name: decision for decision in plan.decisions}
+    decisions = {decision.name: decision for decision in plan.tensors}
 
     staging = f"{OUTPUT_DIR}.staging-{uuid.uuid4().hex}"
     if os.path.exists(OUTPUT_DIR) and not overwrite:
