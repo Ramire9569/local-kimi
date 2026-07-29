@@ -55,7 +55,7 @@ IMAGE = (
 )
 def bench_variants(
     variants: list[str],
-    prompt_tokens: int = 8,
+    prompt: str = "Explain in two sentences why quantizing a large language model to four bits reduces memory.",
     new_tokens: int = 64,
     repeats: int = 3,
     cap_memory: bool = True,
@@ -92,7 +92,17 @@ def bench_variants(
         if isinstance(m, W4A16Linear) and not m._retained_bf16
     ]
 
-    input_ids = torch.full((1, prompt_tokens), 1000, dtype=torch.long, device=device)
+    # A real prompt, not filler. An earlier version used a repeated dummy token
+    # and every variant generated the same token 64 times, so "token ids
+    # identical" was true but proved almost nothing. Equivalence is only
+    # evidence when the reference output actually varies, which is asserted
+    # below.
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_DIR, trust_remote_code=True, local_files_only=True
+    )
+    input_ids = tokenizer(prompt, return_tensors="pt")["input_ids"].to(device=device)
 
     results: list[dict] = []
     reference_ids: list[int] | None = None
@@ -166,6 +176,17 @@ def bench_variants(
             f"identical={identical}"
         )
 
+    # Identical output is only evidence when the output varies. A degenerate
+    # prompt that makes the model repeat one token would make every variant
+    # "identical" while proving nothing about the kernels.
+    distinct = len(set(reference_ids or []))
+    if distinct < 3:
+        raise RuntimeError(
+            f"the reference generated only {distinct} distinct token ids, so an "
+            "identical-output comparison proves nothing. Use a prompt that "
+            "produces varied output before trusting this gate."
+        )
+
     baseline = results[0]["tokens_per_second"]
     for row in results:
         row["speedup_over_first"] = row["tokens_per_second"] / baseline
@@ -176,7 +197,9 @@ def bench_variants(
         "memory_capped_to_bytes": BUDGET_BYTES if cap_memory else None,
         "load_seconds": load_seconds,
         "resident_weight_bytes": model.resident_weight_bytes,
-        "prompt_tokens": prompt_tokens,
+        "prompt": prompt,
+        "prompt_tokens": int(input_ids.shape[1]),
+        "distinct_generated_ids": len(set(reference_ids or [])),
         "new_tokens": new_tokens,
         "repeats": repeats,
         "results": results,
@@ -187,14 +210,14 @@ def bench_variants(
 
 @app.local_entrypoint()
 def main(
+    prompt: str = "Explain in two sentences why quantizing a large language model to four bits reduces memory.",
     variants: str = "reference/reference,triton_gemv/reference,triton_gemv/triton_gemv",
-    prompt_tokens: int = 8,
     new_tokens: int = 64,
     repeats: int = 3,
 ) -> None:
     payload = bench_variants.remote(
         [name.strip() for name in variants.split(",") if name.strip()],
-        prompt_tokens=prompt_tokens,
+        prompt=prompt,
         new_tokens=new_tokens,
         repeats=repeats,
     )
