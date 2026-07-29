@@ -18,6 +18,7 @@ from .weights import (
     CheckpointKind,
     SafetensorExpertProvider,
     SafetensorIndexStore,
+    W3A16ExpertProvider,
     W4A16ExpertProvider,
 )
 
@@ -128,6 +129,7 @@ class KLinearModel(nn.Module):
         self._weight_store = None
         self._expert_provider = expert_provider
         self._lm_head_quantized = False
+        self._packed_kind = None
 
     def quantize_lm_head(self) -> int:
         """Replace the BF16 vocabulary head with an INT4 one, in place.
@@ -170,10 +172,19 @@ class KLinearModel(nn.Module):
         config = KLinearConfig.from_json(directory / "config.json")
         _validate_real_config(config)
         store = SafetensorIndexStore(directory, validate_real_layout=True)
-        if store.checkpoint_kind is CheckpointKind.W4A16:
+        packed_kinds = (CheckpointKind.W4A16, CheckpointKind.W3A16)
+        if store.checkpoint_kind in packed_kinds:
             if dtype != torch.bfloat16:
-                raise TypeError("W4A16 checkpoint loading requires torch.bfloat16")
-            expert_provider = W4A16ExpertProvider(store, device=device)
+                raise TypeError(
+                    f"{store.checkpoint_kind.value} checkpoint loading requires "
+                    "torch.bfloat16"
+                )
+            provider_type = (
+                W4A16ExpertProvider
+                if store.checkpoint_kind is CheckpointKind.W4A16
+                else W3A16ExpertProvider
+            )
+            expert_provider = provider_type(store, device=device)
         else:
             expert_provider = SafetensorExpertProvider(
                 store, cache_entries=expert_cache_entries
@@ -185,17 +196,19 @@ class KLinearModel(nn.Module):
             device="meta",
             dtype=dtype,
         )
+        model._packed_kind = store.checkpoint_kind
         model.load_checkpoint_weights(store, device=device, dtype=dtype)
         model._weight_store = store
         model._expert_provider = expert_provider
-        if store.checkpoint_kind is CheckpointKind.W4A16:
+        if store.checkpoint_kind in packed_kinds:
             model.prepare_grouped_decode_weights()
         if (
-            store.checkpoint_kind is CheckpointKind.W4A16
+            store.checkpoint_kind in packed_kinds
             and model.resident_weight_bytes != store.tensor_storage_bytes
         ):
             raise ValueError(
-                "resident W4A16 bytes disagree with checkpoint tensor storage: "
+                f"resident {store.checkpoint_kind.value} bytes disagree with "
+                "checkpoint tensor storage: "
                 f"resident={model.resident_weight_bytes}, "
                 f"checkpoint={store.tensor_storage_bytes}"
             )
@@ -255,10 +268,23 @@ class KLinearModel(nn.Module):
         return KLinearDecodeState.empty(self.config.num_hidden_layers)
 
     def prepare_grouped_decode_weights(self) -> None:
-        """Move resident W4A16 experts into layer-contiguous grouped banks."""
+        """Move resident packed experts into layer-contiguous grouped banks.
+
+        Both codecs need this: the grouped decode kernel reads one contiguous
+        bank per layer rather than 257 separate expert payloads. The W3A16
+        builder is a free function rather than a method because the module that
+        owns the banks is shared between both codecs.
+        """
+        from .quantized3 import prepare_grouped_w3a16
+
         for layer in self.layers:
-            if layer.block_sparse_moe is not None:
-                layer.block_sparse_moe.prepare_grouped_w4a16()
+            module = layer.block_sparse_moe
+            if module is None:
+                continue
+            if getattr(self, "_packed_kind", None) is CheckpointKind.W3A16:
+                prepare_grouped_w3a16(module)
+            else:
+                module.prepare_grouped_w4a16()
 
     def _attention_masks(
         self,
