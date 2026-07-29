@@ -125,19 +125,36 @@ narrower tile with no split-K won clearly:
 | N=6144, MLA q_proj | 24.2% | **32.4%**, 1.34x faster |
 | N=2304, o_proj | 15.9% | **17.0%**, 1.07x faster |
 
-Switching the selector to it moved end to end decode from **109.71 tok/s down to
-105.44**, with the same 38 tok/s baseline in both runs and repeat timings stable
-to 0.05 ms. A real 4 percent regression.
+Switching the selector to it measured 105.44 tok/s end to end against 109.71 for
+the shipped configuration, so it was reverted.
 
-The isolated benchmark runs one shape in a tight loop, where 256 small programs
-fill the card. A decode step issues about 104 such calls back to back, and there
-the narrower tile costs more in per-kernel scheduling than it gains in
-occupancy. The selector keeps the configuration that measured fastest in the
-engine, and the sweep is kept for understanding the kernel rather than for
-choosing its launch parameters.
+**That comparison is weaker than it first looked, and the correction matters.**
+Re-running the unchanged shipped configuration in a fresh container measured
+115.31 tok/s. Repeat timings within a single run are stable to 0.05 ms, but
+between containers the same code varies by about 5 percent, which is larger than
+the effect being tested. One run of each config cannot separate them.
 
-The general lesson is the one this whole file is built on: the end to end
-measurement is the gate. A kernel benchmark is a hypothesis.
+Normalising against the reference baseline measured in the same container:
+
+| run | selector | reference | fused | ratio |
+|---|---|---:|---:|---:|
+| A | shipped | 38.04 | 109.71 | 2.884 |
+| B | n16_k64_s1 | 38.19 | 105.44 | 2.761 |
+| C | shipped | 38.30 | 115.31 | 3.011 |
+
+The ratio still favours the shipped configuration, but on one sample each. The
+revert stands because it is the configuration with the better evidence, not
+because a regression was demonstrated.
+
+Two lessons, and the second was learned by getting it wrong here:
+
+1. A kernel benchmark is a hypothesis. The end to end measurement is the gate.
+2. An end to end measurement taken in a different container is also noisy.
+   Comparisons worth acting on belong in one process, against a baseline
+   measured beside them.
+
+This is why `engine/modal_decode_bench.py` loads the checkpoint once and sweeps
+every variant inside a single container rather than comparing across runs.
 
 ## Known limits
 

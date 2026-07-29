@@ -86,6 +86,42 @@ def _register_dense() -> None:
         description="Batch-1 dense GEMV with K-contiguous weight reads.",
     )(w4a16_dense_gemv)
 
+    # The same kernel with the launch configuration that won the isolated sweep
+    # by a wide margin. Registered as its own variant so the two can be compared
+    # inside ONE process against a baseline measured beside them. Comparing them
+    # across separate benchmark runs is what produced a misleading answer: the
+    # unchanged shipped configuration measured 109.71 and later 115.31 tok/s in
+    # different containers, which is a bigger spread than the effect under test.
+    try:
+        from engine.kernels.w4a16_dense_gemv import (
+            DENSE_GEMV_CONFIGS,
+            _launch_w4a16_dense_gemv,
+            _validate_inputs,
+        )
+    except ImportError:
+        return
+
+    by_name = {config.name: config for config in DENSE_GEMV_CONFIGS}
+    narrow = by_name.get("n16_k64_s1_w4_st3")
+    wide = by_name.get("n32_k128_s2_w8_st2")
+    if narrow is None or wide is None:
+        return
+
+    def dense_narrow(activations, packed_weights, scales):
+        rows, output_size, _ = _validate_inputs(activations, packed_weights, scales)
+        if rows != 1:
+            return w4a16_dense_gemv(activations, packed_weights, scales)
+        config = wide if output_size >= 32768 else narrow
+        return _launch_w4a16_dense_gemv(activations, packed_weights, scales, config)
+
+    registry.register(
+        W4A16_DENSE,
+        "triton_gemv_narrow",
+        requires_cuda=True,
+        description="Dense GEMV using the narrow tile that won the isolated "
+        "sweep. Kept registered so the choice can be re-tested in one process.",
+    )(dense_narrow)
+
 
 _register_grouped()
 _register_dense()

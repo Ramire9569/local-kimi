@@ -208,20 +208,21 @@ def _select_dense_config(output_size: int) -> DenseGemvConfig:
         N=6144  MLA q_proj    24.2%                32.4%
         N=163840 lm_head      30.2%                31.8%          53.1%
 
-    Those isolated numbers do NOT predict the engine. Switching the projection
-    shapes to n16_k64_s1 on the strength of them took end to end decode from
-    109.71 tok/s DOWN to 105.44 on the same card and prompt, with an unchanged
-    38 tok/s baseline in both runs and timings stable to 0.05 ms. It was a real
-    4 percent regression, not noise.
+    Those isolated numbers did not carry over to the engine. Switching the
+    projection shapes to n16_k64_s1 measured 105.44 tok/s end to end against
+    109.71 for this configuration.
 
-    The isolated benchmark runs one shape in a tight loop, where 256 small
-    programs fill the card nicely. A decode step issues about 104 of these calls
-    back to back, and there the narrower tile costs more in per-kernel
-    scheduling than it wins in occupancy.
+    Treat that gap carefully. Re-running the UNCHANGED shipped configuration in
+    a fresh container later measured 115.31 tok/s, so container to container
+    variance on this benchmark is around 5 percent and a single run of each
+    config cannot separate a 4 percent effect from noise. Normalising by the
+    reference baseline measured in the same container gives ratios of 2.884 and
+    3.011 for this configuration against 2.761 for n16_k64_s1, which still
+    favours this one, but on one sample each.
 
-    So this keeps the configuration that measured fastest END TO END. The
-    isolated sweep is kept in BENCH-DENSE-GEMV.py because it is useful for
-    understanding the kernel, not for choosing its launch parameters.
+    So this keeps the configuration that has measured fastest end to end so far.
+    The isolated sweep in BENCH-DENSE-GEMV.py is useful for understanding the
+    kernel and is not sufficient for choosing its launch parameters.
     """
     if output_size <= 3072:
         return DENSE_GEMV_CONFIGS[1]
