@@ -78,6 +78,44 @@ in the two kernels that dominate the profile. Holding everything else fixed:
 Those are arithmetic projections from the measured split, not measurements.
 They set the direction of the work, not a claim about the result.
 
+## After the fused kernels
+
+The same profile re-run with `--kernels triton_gemv/triton_gemv`:
+
+| | before | after |
+|---|---:|---:|
+| Graph replay | 28.11 ms, 35.58 tok/s | **9.16 ms, 109.12 tok/s** |
+| GPU kernel time | 28.85 ms | 9.71 ms |
+| Launches per token | 3,264 | 2,226 |
+| Distinct kernels | 71 | 48 |
+
+| category | ms per token | percent | launches |
+|---|---:|---:|---:|
+| other | 3.808 | 39.2% | 364 |
+| grouped W4A16 GEMV | 3.019 | 31.1% | 78 |
+| elementwise | 1.987 | 20.5% | 1,396 |
+| reduction | 0.507 | 5.2% | 262 |
+| index | 0.283 | 2.9% | 79 |
+| copy | 0.096 | 1.0% | 40 |
+
+The two kernels that were 77 percent of decode are now 51 percent of a total
+that is three times smaller: 13.184 ms became 3.019, and 9.132 became 1.980.
+
+`other` is now the largest bucket, and most of it is the dense GEMV at 1.980 ms
+plus cuBLAS matrix-vector calls at 1.435 ms. The single largest of those is one
+call costing 1.045 ms per token, which is the BF16 language modelling head: at
+755 MB it is running near 720 GB/s, roughly 84 percent of the card, so there is
+nothing to win there without quantising it and paying for that in quality.
+
+The remaining headroom, in order:
+
+1. The dense GEMV at 1.980 ms is still only reaching 11 to 17 percent of peak
+   bandwidth. A single 5.31 MB matrix at `BLOCK_N=64` produces 64 programs on a
+   142-SM card, so it is starved for parallelism rather than limited by memory.
+2. 1,396 elementwise launches still cost 1.987 ms, which is a fifth of decode
+   now that the total is smaller.
+3. The grouped GEMV at 51 percent of peak has perhaps 1.5x left in it.
+
 ## What this profile does not establish
 
 - It is one prompt, one batch, greedy, on one card. It is not a serving

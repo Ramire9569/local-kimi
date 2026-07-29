@@ -80,14 +80,18 @@ def profile_decode(
     profile_steps: int = 24,
     timed_steps: int = 64,
     cap_memory: bool = True,
+    kernels: str = "reference/reference",
 ) -> dict:
     import time
 
     import torch
     from torch.profiler import ProfilerActivity, profile
 
+    from engine.kernels import W4A16_DENSE, W4A16_GROUPED, registry
     from engine.klinear.generate import CUDAGraphDecodeRunner, decode, prefill
     from engine.klinear.model import KLinearModel
+    from engine.klinear.moe import KLinearMoE
+    from engine.klinear.quantized import W4A16Linear
 
     if not torch.cuda.is_available():
         raise RuntimeError("the decode profile requires CUDA")
@@ -105,6 +109,15 @@ def profile_decode(
     model = KLinearModel.from_directory(MODEL_DIR, device=device, dtype=torch.bfloat16)
     torch.cuda.synchronize(device)
     load_seconds = time.perf_counter() - load_started
+
+    grouped_name, _, dense_name = kernels.partition("/")
+    registry.use(W4A16_GROUPED, grouped_name)
+    registry.use(W4A16_DENSE, dense_name or "reference")
+    for module in model.modules():
+        if isinstance(module, KLinearMoE):
+            module._grouped_kernel = registry.resolve(W4A16_GROUPED)
+        elif isinstance(module, W4A16Linear) and not module._retained_bf16:
+            module._dense_kernel = registry.resolve(W4A16_DENSE)
 
     # A fixed synthetic prompt keeps the profile comparable between runs. Token
     # 1000 is an ordinary vocabulary entry, not a control token.
@@ -211,6 +224,7 @@ def profile_decode(
         "gpu": torch.cuda.get_device_name(device),
         "gpu_total_bytes": total_bytes,
         "memory_capped_to_bytes": BUDGET_BYTES if cap_memory else None,
+        "kernels": kernels,
         "load_seconds": load_seconds,
         "resident_weight_bytes": model.resident_weight_bytes,
         "prompt_tokens": prompt_tokens,
@@ -240,11 +254,13 @@ def main(
     prompt_tokens: int = 8,
     profile_steps: int = 24,
     timed_steps: int = 64,
+    kernels: str = "reference/reference",
 ) -> None:
     result = profile_decode.remote(
         prompt_tokens=prompt_tokens,
         profile_steps=profile_steps,
         timed_steps=timed_steps,
+        kernels=kernels,
     )
     print("\n" + "=" * 78)
     print(f"GPU {result['gpu']}")
