@@ -138,7 +138,9 @@ them running at 4 to 10 percent of the card's memory bandwidth.
 
 Rewriting them as real GEMVs, with the reduction axis contiguous and a
 single-row accumulator, took the grouped expert kernel from 8.3 to 51.7 percent
-of peak.
+of peak on the kernel benchmark. Inside a full decode step the same kernel
+reaches 36 percent, because it contends with everything else; both numbers are
+measured and they measure different things.
 
 ![Decode throughput after each fused kernel](docs/figures/decode-throughput.png)
 

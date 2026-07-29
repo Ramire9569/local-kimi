@@ -47,8 +47,8 @@ The L40S moves 864 GB/s.
 
 | kernel | weight bytes read per token | roofline | measured | achieved |
 |---|---:|---:|---:|---:|
-| `_grouped_w4a16_kernel` | ~931 MB | 1.08 ms | 13.184 ms | ~71 GB/s, 8% of peak |
-| `_w4a16_gemm_kernel` | ~762 MB | 0.88 ms | 9.132 ms | ~83 GB/s, 10% of peak |
+| `_grouped_w4a16_kernel` | 931.6 MB | 1.08 ms | 13.184 ms | ~71 GB/s, 8.2% of peak |
+| `_w4a16_gemm_kernel` | 534 MB | 0.62 ms | 9.132 ms | ~58 GB/s, 6.8% of peak |
 
 These kernels are not memory bound. They are shaped wrong.
 
@@ -112,12 +112,19 @@ nothing to win there without quantising it and paying for that in quality.
 
 The remaining headroom, in order:
 
-1. The dense GEMV at 1.980 ms is still only reaching 11 to 17 percent of peak
-   bandwidth. A single 5.31 MB matrix at `BLOCK_N=64` produces 64 programs on a
-   142-SM card, so it is starved for parallelism rather than limited by memory.
+1. The dense GEMV moves 534 MB in 1.980 ms, which is 270 GB/s or **31 percent
+   of peak in situ**. Its isolated per-shape benchmarks read 11 to 17 percent;
+   back-to-back calls inside a decode step overlap where a tight single-shape
+   loop does not. A single 5.31 MB matrix at `BLOCK_N=64` produces 64 programs
+   on a 142-SM card, so it is starved for parallelism rather than limited by
+   memory.
 2. 1,396 elementwise launches still cost 1.987 ms, which is a fifth of decode
    now that the total is smaller.
-3. The grouped GEMV at 51 percent of peak has perhaps 1.5x left in it.
+3. The grouped GEMV moves 931.6 MB in 3.019 ms, which is 309 GB/s or
+   **36 percent of peak in situ**, so roughly 2.2x remains against an 80 percent
+   target. Its isolated single-shape benchmark reads 51.7 percent. Both numbers
+   are real and they measure different things; `engine/kernels/RESULTS.md` holds
+   the isolated table and this file holds the in-situ one.
 
 ## What this profile does not establish
 

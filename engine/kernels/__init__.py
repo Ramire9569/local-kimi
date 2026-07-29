@@ -44,7 +44,8 @@ def _register_grouped() -> None:
         "triton_gemv",
         requires_cuda=True,
         description="Batch-1 grouped GEMV with K-contiguous weight reads. "
-        "Measured at 51 percent of L40S peak, 5.95x the reference.",
+        "Measured on the kernel benchmark at 51 percent of L40S peak, 5.95x "
+        "the reference. In situ, inside a decode step, it reaches 36 percent.",
     )(grouped_w4a16_gemv)
     registry.set_default(W4A16_GROUPED, "triton_gemv")
 

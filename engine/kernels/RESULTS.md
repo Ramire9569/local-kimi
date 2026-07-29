@@ -26,6 +26,12 @@ Both had been written as GEMMs and were being used at decode as GEMVs:
 
 ## Kernel level
 
+Percentages in this table are **isolated single-shape benchmarks**: one shape in
+a tight loop. Inside a decode step the same kernels reach less, because they
+contend with everything else. The in-situ figures are 36 percent for the grouped
+kernel and 31 percent for the dense one, and they live in
+`engine/klinear/DECODE-PROFILE.md`.
+
 | kernel | shape | before | after | speedup | peak bandwidth reached |
 |---|---|---:|---:|---:|---:|
 | grouped W4A16, w1 and w3 | N=1024, K=2304 | 0.1768 ms | 0.0297 ms | **5.95x** | 8.3% to **51.7%** |
