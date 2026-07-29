@@ -40,7 +40,6 @@ def test_fused_swiglu_matches_current_grouped_path() -> None:
     torch.manual_seed(20260729)
     device = torch.device("cuda")
     tokens = 2
-    routes = 3
     experts = 3
     output_size = 65
     reduction = 64

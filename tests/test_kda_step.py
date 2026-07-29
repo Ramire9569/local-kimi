@@ -9,7 +9,6 @@ from engine.kernels.kda_step import (
     kda_decode_step_reference,
 )
 
-
 SINGLE_STEP_ATOL = 3e-5
 SINGLE_STEP_RTOL = 3e-5
 RECURRENT_ATOL = 5e-4

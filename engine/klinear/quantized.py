@@ -8,7 +8,6 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from engine.quant.triton_w4a16 import w4a16_linear
 from engine.quant.w4a16 import GROUP_SIZE, W4A16Tensor
 
 

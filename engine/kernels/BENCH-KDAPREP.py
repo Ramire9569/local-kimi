@@ -14,7 +14,6 @@ from engine.kernels.kda_prepare import (
     fused_short_conv_triple_reference,
 )
 
-
 BATCH = 1
 SEQUENCE = 1
 PROJECTION_SIZE = 4096

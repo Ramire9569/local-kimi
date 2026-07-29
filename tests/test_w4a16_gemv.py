@@ -57,7 +57,6 @@ def test_grouped_w4a16_gemv_matches_reference_and_split_k_is_deterministic() -> 
 
     torch.manual_seed(20260729)
     tokens = 1
-    routes = 2
     experts = 3
     output_size = 96
     reduction = 64

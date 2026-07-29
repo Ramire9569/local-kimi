@@ -7,7 +7,6 @@ from pathlib import Path
 
 import torch
 
-
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -17,7 +16,6 @@ from engine.kernels.kda_step import (  # noqa: E402
     _kda_decode_step_with_block_v,
     kda_decode_step_reference,
 )
-
 
 BATCH = 1
 HEADS = 32
