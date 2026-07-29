@@ -100,17 +100,39 @@ divergence that quantising the model already introduced.
 That is the claim this work supports: the fused kernels are a much smaller
 perturbation than the quantisation already applied, not that they are exact.
 
-## What was built and not used
+## Two fusions that were built, measured, and left switched off
 
-The fused SwiGLU kernel in `engine/kernels/moe_swiglu.py` measured 1.133x
-against the original three-call path. It is not wired in and it is not
-registered, because it fuses two calls into one and so does not share a
-signature with the grouped kernel it would replace. Its baseline was the old
-kernel running at 8 percent of peak, so it fused two slow kernels together, and
-the grouped GEMV makes the same calls 5.95x faster instead. The file and its
-benchmark stay in the repository so the measurement is reproducible. Rebuilding
-the fusion on the GEMV tiling would be worth roughly 0.5 ms per token, which is
-why it was left rather than deleted.
+**Fusing the gate and up projections does not pay.** The expert path calls the
+grouped kernel twice on the same activation with identical shapes, so folding
+them into one launch looks obviously right: one activation load instead of two,
+one launch instead of two, and the SwiGLU applied in registers.
+
+It was built twice. The first attempt, `engine/kernels/moe_swiglu.py`, measured
+1.133x but against the old kernel running at 8 percent of peak, so it was fusing
+two slow kernels and the grouped GEMV beat it outright. The second attempt,
+`grouped_w4a16_swiglu_gemv` in `engine/kernels/w4a16_gemv.py`, was rebuilt on the
+fast tiling and registered as `w4a16_swiglu=fused`. Measured in one process
+against the shipped path, with the baseline run twice for repeatability:
+
+| variant, one container, 5 repeats each | tok/s |
+|---|---:|
+| reference everywhere | 37.96 |
+| **shipped, two grouped calls plus silu** | **109.33** |
+| fused gate and up | 107.64 |
+| shipped again | 109.34 |
+
+The shipped path reproduces to 0.01 percent and the fusion is **1.5 percent
+slower**. The reason is visible in the kernel: two accumulators instead of one
+doubles register pressure and cuts occupancy, and the activation tile it avoids
+re-reading is only about 4.6 KB. The launch it removes was never the cost.
+
+Both remain in the repository and the second remains registered, so the result
+is reproducible with `KIMI_KERNELS=w4a16_swiglu=fused` and nobody has to rebuild
+it to rediscover that it loses.
+
+This is the second tuning idea that won in isolation and lost in the engine. The
+first was the narrow dense tile below. Neither was a bad idea; both were tested
+against the wrong thing before they were tested against the engine.
 
 ## One tuning result that did not survive the engine
 
