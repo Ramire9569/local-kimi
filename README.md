@@ -6,6 +6,8 @@
 
 Point any coding agent at a local Kimi model and it works: `k3` translates between the agent's protocol and the model's.
 
+![How a coding agent reaches the local engine](docs/figures/client-path.png)
+
 ## The problem
 
 Local model servers usually speak OpenAI Chat Completions. Claude Code speaks Anthropic Messages. Codex speaks OpenAI Responses. Point the wrong client at the wrong endpoint and the request fails. `k3` sits between them, detects the caller on each request, and translates the request and response.

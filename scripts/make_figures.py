@@ -145,6 +145,90 @@ def _grid_x(ax) -> None:
     ax.tick_params(axis="y", which="minor", left=False)
 
 
+def client_path() -> None:
+    """How a coding agent reaches the local engine.
+
+    Every label here is checked against the source. The client presets come from
+    k3/presets.py, the three protocol dialects from k3/dialects/, and the tool
+    call parsers from k3/toolcalls.py. Nothing on this diagram is aspirational.
+    """
+    from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+
+    fig, ax = plt.subplots(figsize=(7.4, 3.9))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 62)
+    ax.axis("off")
+
+    def box(x, y, w, h, title, lines, fill, edge, title_size=8.6):
+        ax.add_patch(
+            FancyBboxPatch(
+                (x, y), w, h,
+                boxstyle="round,pad=0.6,rounding_size=1.4",
+                linewidth=0.8, edgecolor=edge, facecolor=fill, zorder=3,
+            )
+        )
+        ax.text(x + w / 2, y + h - 3.4, title, ha="center", va="top",
+                fontsize=title_size, zorder=4)
+        for index, line in enumerate(lines):
+            ax.text(x + w / 2, y + h - 8.6 - index * 4.3, line, ha="center",
+                    va="top", fontsize=7.0, color=MUTED, zorder=4)
+
+    def arrow(x1, y1, x2, y2, label=""):
+        ax.add_patch(
+            FancyArrowPatch(
+                (x1, y1), (x2, y2),
+                arrowstyle="-|>", mutation_scale=8,
+                linewidth=0.8, color=INK, zorder=2,
+                shrinkA=1, shrinkB=1,
+            )
+        )
+        if label:
+            ax.text((x1 + x2) / 2, (y1 + y2) / 2 + 1.3, label, ha="center",
+                    fontsize=6.4, color=MUTED, zorder=4)
+
+    # Clients, each with the wire protocol it actually speaks.
+    clients = [
+        ("Claude Code", "Anthropic Messages", 44),
+        ("Codex", "OpenAI Responses", 26),
+        ("Aider, Cline,\nopencode", "OpenAI Chat", 6),
+    ]
+    for name, protocol, y in clients:
+        box(1, y, 22, 14, name, [protocol], "#f4f6f8", MUTED)
+        arrow(23.4, y + 7, 33.6, 31)
+
+    box(34, 15, 30, 32, "k3", [
+        "detects the client per request",
+        "translates all three dialects",
+        "tool calls: hermes, json, kimi,",
+        "kimi-k3, pythonic, passthrough",
+        "restores reasoning across turns",
+    ], "#eaf0f6", ACCENT, title_size=10)
+
+    arrow(64.4, 31, 74.6, 31)
+
+    box(75, 15, 24, 32, "local engine", [
+        "Kimi-Linear-48B",
+        "selective INT4, 26.8 GiB",
+        "fused decode kernels",
+        "113.83 tok/s on an L40S",
+        "OpenAI Chat upstream",
+    ], "#eef4ef", "#2f6f4e", title_size=10)
+
+    _caption(
+        ax,
+        "Figure 0.",
+        "One local model, every coding agent, no client-side changes.",
+        "Agents disagree about the wire protocol. Claude Code speaks Anthropic Messages, Codex "
+        "speaks OpenAI Responses, and most others speak OpenAI Chat Completions. k3 detects "
+        "which one is calling from the route, headers, user agent and body shape, then "
+        "translates the request and the streamed response, including tool calls in six "
+        "formats and reasoning content that would otherwise be dropped between turns. The "
+        "engine behind it serves an ordinary OpenAI Chat endpoint, so any backend can take "
+        "its place. Verified against k3/presets.py, k3/dialects/ and k3/toolcalls.py.",
+    )
+    _save(fig, "client-path")
+
+
 def decode_throughput() -> None:
     """Throughput after each fused kernel landed."""
     labels = [
@@ -442,6 +526,7 @@ if __name__ == "__main__":
         "LaTeX rendering: "
         + ("on" if USE_TEX else "off, using Computer Modern mathtext")
     )
+    client_path()
     decode_throughput()
     kernel_bandwidth()
     decode_time_split()
