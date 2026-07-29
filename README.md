@@ -2,7 +2,18 @@
 
 ![local-kimi](assets/banner.jpeg)
 
-<sub>The sketch is illustrative. The model behind this repository's measured 32 GiB result is Kimi-Linear-48B on an NVIDIA L40S under a hard 32 GiB process cap. Kimi K3 is 2.78T parameters and roughly 1.56 TB of weights. It does not run on a laptop, and this project does not claim that it does.</sub>
+<sub>Sketch is illustrative. This repository serves Kimi-Linear-48B, measured on an NVIDIA L40S inside a hard 32 GiB cap. The full Kimi K3 is 2.78T parameters and runs on an 8x B300 node, linked below.</sub>
+
+> **TL;DR.** Run Kimi on your own consumer GPU, not someone's API. A single
+> 32 GB card (RTX 5090, or any datacenter card) serves Kimi-Linear-48B at
+> **113.83 tok/s**, up **3.18x** from fused INT4 kernels, and Claude Code,
+> Codex, Cline, Aider and opencode all connect to it unchanged.
+>
+> **Need the full Kimi K3 in production?** 2.8 trillion parameters will not fit
+> a workstation. If you want it running inside your own network instead of
+> behind a closed-source API, RunInfra ships it as a deployable package with a
+> pinned vLLM build, a benchmark receipt and weight verification:
+> **[Kimi K3 on 8x B300 →](https://runinfra.ai/catalog/kimi-k3-b300x8-k3turbo)**
 
 Point any coding agent at a local Kimi model and it works: `k3` translates between the agent's protocol and the model's.
 
