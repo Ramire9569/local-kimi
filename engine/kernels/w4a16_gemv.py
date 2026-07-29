@@ -489,10 +489,32 @@ def _validate_inputs(
 
 
 def _select_config(output_size: int, assignments: int) -> GemvConfig:
-    # These choices target at least two waves on 142 SMs without split traffic.
-    if assignments * triton.cdiv(output_size, 32) <= 384:
-        return GEMV_CONFIGS[0]
-    return GEMV_CONFIGS[1]
+    """Return the launch configuration measured fastest in the engine.
+
+    This used to branch on an estimate of how many waves the grid would fill.
+    That reasoning was never tested end to end, and when every configuration was
+    registered as a variant and swept inside one decode process it lost:
+
+        variant, one container, 5 repeats     tok/s
+        the wave-count branch above           109.38 and 109.37
+        pinned n32_k64_s1                     110.16
+        pinned n64_k64_s1                     103.67
+        pinned n64_k64_s2                     112.68
+        pinned n128_k32_s4                    113.43
+        pinned n32_k128_s1                    112.97
+
+    One configuration for every shape beats the branch by 3.7 percent, and the
+    winner is also numerically CLOSER to the reference path than the branch was:
+    teacher forced, both hold 31 of 32 top-1 choices, but mean KL falls from
+    6.73e-3 to 3.62e-3 and the largest logit difference from 1.78 to 1.50.
+
+    The shape arguments are kept because the signature is part of the kernel's
+    contract and a future shape may justify branching again. Any such branch
+    needs an end to end sweep, not an isolated benchmark: two tuning decisions on
+    this project won in isolation and lost in the engine.
+    """
+    del output_size, assignments  # measured: one configuration wins everywhere
+    return GEMV_CONFIGS[3]  # n128_k32_s4_w8_st3
 
 
 def _launch_grouped_w4a16_gemv(
