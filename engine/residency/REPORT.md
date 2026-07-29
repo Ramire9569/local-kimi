@@ -5,6 +5,15 @@
 > plus one shared. That file is left over from earlier Kimi K3 work and any
 > expert-locality conclusion drawn from it would be about a different
 > architecture. Routing for this model has not been measured.
+>
+> **The 8,124 bytes per token MLA figure below describes a compressed cache
+> policy this engine does not use.** `MLALayerState` in
+> `engine/klinear/state.py` persists projected `key_pass` and `value` as well as
+> the compressed latent, which is 17,536 bytes per token per MLA layer, or
+> 122,752 across the seven of them. At 32k context the live MLA state is
+> 3.79 GiB, not 254 MiB. The compressed figure is the right one for a SNAPSHOT,
+> because `key_pass` and `value` are rebuildable from the latent, but it is the
+> wrong one for live residency.
 
 
 ## The state model is MEASURED, and it is exact
