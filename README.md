@@ -58,6 +58,27 @@ The **113.83 tokens per second** L40S engine result and llama.cpp's reported **r
 
 The INT4 artifact is not equivalent in quality to the BF16 source. [`engine/accuracy/RESULTS.md`](engine/accuracy/RESULTS.md) records the measured difference.
 
+## Which GPUs this runs on
+
+Be clear-eyed about this before you try it. The INT4 artifact holds **26.83 GiB**
+of weights and needs roughly 2.5 GiB beyond that for activations, state and the
+CUDA context.
+
+| card | memory | runs today |
+|---|---:|:---:|
+| RTX 4080 | 16 GB | no |
+| RTX 3090 | 24 GB | **no**, 2.83 GiB short |
+| RTX 4090 | 24 GB | **no**, 2.83 GiB short |
+| RTX 5090 | 32 GB | yes |
+| L40S, A100, H100 | 48 GB and up | yes, the L40S is what was measured |
+
+The 113.83 tokens per second figure is an L40S. **A 3090 or 4090 cannot load
+this yet.** Fitting a 24 GB card needs the expert weights at three bits rather
+than four, which brings the artifact to 21.28 GiB. That codec is implemented in
+[`engine/quant/w3a16.py`](engine/quant/w3a16.py) but the checkpoint has not been
+requantised, so it is not usable today. See
+[`engine/CONSUMER-GPU.md`](engine/CONSUMER-GPU.md) for the arithmetic.
+
 ## How the engine got faster
 
 For people who want the technical detail. Everything below is measured on one

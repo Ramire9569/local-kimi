@@ -1,5 +1,12 @@
 # Kimi-Linear live residency budget
 
+> **`measured_routing.json` in this directory does not describe this model.**
+> It records 896 experts per layer. Kimi-Linear-48B-A3B has 256 routed experts
+> plus one shared. That file is left over from earlier Kimi K3 work and any
+> expert-locality conclusion drawn from it would be about a different
+> architecture. Routing for this model has not been measured.
+
+
 ## The state model is MEASURED, and it is exact
 
 `engine/modal_residency.py` ran on an NVIDIA H100 80GB HBM3 (torch 2.13.0+cu130,
