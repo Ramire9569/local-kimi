@@ -70,14 +70,14 @@ def _finish(ax, title: str, subtitle: str, *, width: int = 96) -> None:
 
 
 def decode_stages() -> None:
-    """Throughput after each optimisation, all with identical output."""
+    """Throughput after each fused kernel landed."""
     labels = [
-        "Reference\ngrowing state",
-        "Preallocated\nstate",
-        "Streaming\nend to end",
-        "CUDA graph\nreplay",
+        "Before\nfused kernels",
+        "KDA\nfusions",
+        "+ grouped\nW4A16 GEMV",
+        "+ dense\nW4A16 GEMV",
     ]
-    values = [9.02, 24.07, 32.33, 35.71]
+    values = [35.76, 38.04, 61.88, 109.71]
     colors = [BASE, ACCENT, ACCENT, ACCENT]
 
     fig, ax = plt.subplots(figsize=(7.2, 3.6))
@@ -85,32 +85,124 @@ def decode_stages() -> None:
     for bar, value in zip(bars, values, strict=True):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            value + 0.7,
+            value + 2.0,
             f"{value:.2f}",
             ha="center",
             fontsize=9,
             fontweight="bold",
         )
     ax.set_ylabel("tokens per second")
-    ax.set_ylim(0, 42)
+    ax.set_ylim(0, 132)
     ax.grid(axis="y", color="#ededed", linewidth=0.8)
     ax.set_axisbelow(True)
     ax.annotate(
-        "3.96x, byte identical token ids",
-        xy=(3, 35.71),
-        xytext=(1.35, 39.4),
-        fontsize=8.5,
+        "3.07x",
+        xy=(3, 109.71),
+        xytext=(1.5, 122.0),
+        fontsize=9,
         color=ACCENT,
+        fontweight="bold",
         arrowprops={"arrowstyle": "->", "color": ACCENT, "lw": 1.0},
     )
     _finish(
         ax,
-        "Decode throughput after each optimisation",
-        "NVIDIA L40S, INT4 weights, single stream, greedy, 64 tokens, inside a hard 32 GiB cap. "
-        "Source: engine/klinear/DECODE-BENCHMARK.md",
+        "Decode throughput after each fused kernel",
+        "NVIDIA L40S, INT4 weights, single stream, greedy, 17-token prompt, 64 generated "
+        "tokens, inside a hard 32 GiB cap. The kernels are not bit-identical to the "
+        "reference: teacher forced they agree on 96.9 percent of next-token choices at "
+        "0.0036 nats mean KL, about a tenth of what INT4 quantisation itself costs. "
+        "Source: engine/kernels/RESULTS.md",
     )
     fig.tight_layout()
     fig.savefig(OUT / "decode-throughput.png", bbox_inches="tight")
+    plt.close(fig)
+
+
+def kernel_bandwidth() -> None:
+    """The reason the speedup existed: both hot kernels were shaped wrong."""
+    labels = [
+        "grouped W4A16\nw1 and w3",
+        "grouped W4A16\nw2",
+        "dense W4A16\nq/k/v",
+        "dense W4A16\no_proj",
+    ]
+    before = [8.26, 10.19, 9.38, 4.06]
+    after = [51.73, 51.18, 11.13, 9.81]
+
+    x = range(len(labels))
+    width = 0.36
+    fig, ax = plt.subplots(figsize=(7.6, 3.8))
+    first = ax.bar([i - width / 2 for i in x], before, width, label="before", color=BASE)
+    second = ax.bar([i + width / 2 for i in x], after, width, label="after", color=ACCENT)
+    for group in (first, second):
+        for bar in group:
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 1.2,
+                f"{bar.get_height():.1f}%",
+                ha="center",
+                fontsize=8.5,
+            )
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(labels)
+    ax.set_ylabel("percent of L40S peak bandwidth")
+    ax.set_ylim(0, 68)
+    ax.legend(frameon=False, loc="upper right", fontsize=8.5)
+    ax.grid(axis="y", color="#ededed", linewidth=0.8)
+    ax.set_axisbelow(True)
+    _finish(
+        ax,
+        "Both hot kernels were running far below the card",
+        "Each was written as a GEMM and used at decode as a GEMV: tl.dot with a 16-row "
+        "accumulator for a single token, and packed weights indexed with N on the fastest "
+        "axis so every lane pulled its own cache line. The dense kernel remains starved for "
+        "parallelism, which is why it gains less. Peak is 864 GB/s. "
+        "Source: engine/kernels/RESULTS.md",
+    )
+    fig.tight_layout()
+    fig.savefig(OUT / "kernel-bandwidth.png", bbox_inches="tight")
+    plt.close(fig)
+
+
+def decode_time_split() -> None:
+    """Where a decode token went before the kernel work."""
+    labels = [
+        "grouped W4A16",
+        "dense W4A16",
+        "elementwise",
+        "other",
+        "reduction",
+        "index, copy, softmax",
+    ]
+    values = [13.184, 9.132, 3.385, 1.838, 0.766, 0.545]
+    launches = [78, 104, 2236, 360, 300, 186]
+    colors = [WARN, WARN, ACCENT, BASE, BASE, BASE]
+
+    fig, ax = plt.subplots(figsize=(7.6, 3.2))
+    bars = ax.barh(labels, values, color=colors, height=0.62)
+    for bar, value, count in zip(bars, values, launches, strict=True):
+        ax.text(
+            value + 0.25,
+            bar.get_y() + bar.get_height() / 2,
+            f"{value:.2f} ms   {count} launches",
+            va="center",
+            fontsize=8.5,
+        )
+    ax.set_xlim(0, 20)
+    ax.set_xlabel("milliseconds per decoded token")
+    ax.invert_yaxis()
+    ax.grid(axis="x", color="#ededed", linewidth=0.8)
+    ax.set_axisbelow(True)
+    _finish(
+        ax,
+        "Two kernels held 77 percent of decode time",
+        "Measured on an L40S over 28.85 ms of GPU work per token. CUDA graph capture had "
+        "already removed launch overhead, so the 2,236 elementwise launches cost only 3.4 ms "
+        "between them and kernel count was not the bottleneck. "
+        "Source: engine/klinear/DECODE-PROFILE.md",
+    )
+    fig.tight_layout()
+    fig.savefig(OUT / "decode-time-split.png", bbox_inches="tight")
     plt.close(fig)
 
 
@@ -191,29 +283,31 @@ def quantisation_quality() -> None:
 
 
 def memory_headroom() -> None:
-    """The speedup was paid for in memory."""
-    labels = ["Before optimisation", "After optimisation"]
-    peak = [30.515658752, 34.349252608]
-    budget = 34.359738368
+    """The fused kernels gave memory back rather than spending it."""
+    labels = ["Reference kernels", "Fused kernels"]
+    peak = [29.56, 27.63]
+    budget = 32.0
 
     fig, ax = plt.subplots(figsize=(7.2, 2.5))
-    bars = ax.barh(labels, peak, color=[BASE, WARN], height=0.5)
+    bars = ax.barh(labels, peak, color=[BASE, ACCENT], height=0.5)
     for bar, value in zip(bars, peak, strict=True):
         slack = budget - value
-        note = f"{value:.2f} GB used, {slack:.2f} GB free"
-        ax.text(value + 0.35, bar.get_y() + bar.get_height() / 2, note, va="center", fontsize=8.5)
+        note = f"{value:.2f} GiB used, {slack:.2f} GiB free"
+        ax.text(value + 0.3, bar.get_y() + bar.get_height() / 2, note, va="center", fontsize=8.5)
     ax.axvline(budget, color=INK, linestyle="--", linewidth=1.0)
-    ax.text(budget + 0.35, -0.45, "32 GiB cap", fontsize=8)
-    ax.set_xlim(0, 42)
-    ax.set_xlabel("peak reserved device memory, GB")
+    ax.text(budget + 0.3, -0.45, "32 GiB cap", fontsize=8)
+    ax.set_xlim(0, 39)
+    ax.set_xlabel("peak reserved device memory, GiB")
     ax.invert_yaxis()
     ax.grid(axis="x", color="#ededed", linewidth=0.8)
     ax.set_axisbelow(True)
     _finish(
         ax,
-        "The speedup was paid for in memory",
-        "Preallocated buffers, contiguous expert banks and graph capture leave 10.5 MB of slack "
-        "where there was 3.58 GiB. Source: engine/klinear/DECODE-BENCHMARK.md",
+        "The speedup gave memory back",
+        "An earlier version of this figure said the opposite, because it was drawn before the "
+        "fused kernels existed. The GEMV path allocates no per-call partial buffers, so peak "
+        "reserved memory fell by 1.93 GiB while throughput went up 3.07x. "
+        "Source: engine/kernels/RESULTS.md",
     )
     fig.tight_layout()
     fig.savefig(OUT / "memory-headroom.png", bbox_inches="tight")
@@ -222,6 +316,8 @@ def memory_headroom() -> None:
 
 if __name__ == "__main__":
     decode_stages()
+    kernel_bandwidth()
+    decode_time_split()
     weight_bytes()
     quantisation_quality()
     memory_headroom()

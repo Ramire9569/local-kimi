@@ -58,6 +58,49 @@ The **109.71 tokens per second** L40S engine result and llama.cpp's reported **r
 
 The INT4 artifact is not equivalent in quality to the BF16 source. [`engine/accuracy/RESULTS.md`](engine/accuracy/RESULTS.md) records the measured difference.
 
+## How the engine got faster
+
+For people who want the technical detail. Everything below is measured on one
+NVIDIA L40S under a hard 32 GiB cap, and every figure names the document it came
+from.
+
+We profiled decode before changing anything. The result was not what we expected.
+CUDA graph capture had already removed launch overhead, so the 2,236 elementwise
+kernel launches per token cost only 3.4 ms between them. Two W4A16 kernels held
+77 percent of the time.
+
+![Where decode time went](docs/figures/decode-time-split.png)
+
+Both of those kernels had been written as matrix-matrix multiplies and were being
+used at decode as matrix-vector multiplies. They called `tl.dot` with a 16-row
+accumulator to multiply a single token, throwing away fifteen sixteenths of the
+work, and they indexed packed weights with the output dimension on the fastest
+axis, so neighbouring threads pulled separate cache lines. Together that left
+them running at 4 to 10 percent of the card's memory bandwidth.
+
+![Kernel bandwidth before and after](docs/figures/kernel-bandwidth.png)
+
+Rewriting them as real GEMVs, with the reduction axis contiguous and a
+single-row accumulator, took the grouped expert kernel from 8.3 to 51.7 percent
+of peak.
+
+![Decode throughput after each fused kernel](docs/figures/decode-throughput.png)
+
+The fused path also allocates no per-call partial buffers, so peak memory fell
+while throughput rose.
+
+![Memory headroom](docs/figures/memory-headroom.png)
+
+Kernels live behind a registry in [`engine/kernels/registry.py`](engine/kernels/registry.py).
+Each operation has one reference implementation and any number of variants, a
+variant is selected with the `KIMI_KERNELS` environment variable, and
+[`engine/kernels/equivalence.py`](engine/kernels/equivalence.py) compares every
+variant against the reference. That is how a kernel gets swapped in without
+guessing whether it changed the model.
+
+Full numbers, including what we built and chose not to ship, are in
+[`engine/kernels/RESULTS.md`](engine/kernels/RESULTS.md).
+
 ## Built by RunInfra
 
 This project is built and maintained by [RunInfra](https://runinfra.ai/).
