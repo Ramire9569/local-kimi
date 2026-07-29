@@ -48,12 +48,12 @@ reported. Timings varied by under 0.05 ms across repeats.
 | original, before any of this work | 35.76 | 27.96 | 1.00x |
 | KDA fusions only | 38.04 | 26.29 | 1.06x |
 | KDA plus grouped GEMV | 61.88 | 16.16 | 1.73x |
-| **KDA plus grouped and dense GEMV** | **109.71** | **9.11** | **3.07x** |
+| **KDA plus grouped and dense GEMV** | **109.51** | **9.13** | **3.06x** |
 
 Read the middle rows carefully. The KDA fusions are applied whenever the decode
 shape matches and are not switched by the W4A16 variant selector, so they are
 present in every row including the one labelled reference. That is why the
-baseline of the final sweep reads 38.04 rather than 35.76. The 3.07x figure is
+baseline of the final sweep reads 38.04 rather than 35.76. The 3.06x figure is
 against the original engine measured before any kernel in this directory
 existed; the same sweep read against its own baseline gives 2.88x.
 
@@ -63,7 +63,7 @@ The split by contribution, against the original 35.76:
 |---|---:|---:|
 | KDA preparation and recurrence fusion | 38.04 | 3% |
 | grouped W4A16 GEMV | 61.88 | 32% |
-| dense W4A16 GEMV | 109.71 | 65% |
+| dense W4A16 GEMV | 109.51 | 65% |
 
 Peak reserved memory fell from 29.56 GiB to 27.63 GiB, so the 32 GiB budget
 holds with more room than before rather than less.
@@ -125,36 +125,41 @@ narrower tile with no split-K won clearly:
 | N=6144, MLA q_proj | 24.2% | **32.4%**, 1.34x faster |
 | N=2304, o_proj | 15.9% | **17.0%**, 1.07x faster |
 
-Switching the selector to it measured 105.44 tok/s end to end against 109.71 for
-the shipped configuration, so it was reverted.
+Switching the selector to it measured slower end to end, so it was reverted. The
+first evidence for that was two numbers taken in separate containers, 105.44
+against 109.71, which is not sound: re-running the unchanged shipped
+configuration in a fresh container later measured 115.31 tok/s, a spread larger
+than the effect being tested.
 
-**That comparison is weaker than it first looked, and the correction matters.**
-Re-running the unchanged shipped configuration in a fresh container measured
-115.31 tok/s. Repeat timings within a single run are stable to 0.05 ms, but
-between containers the same code varies by about 5 percent, which is larger than
-the effect being tested. One run of each config cannot separate them.
+The sound version registers both configurations as variants and sweeps them in
+one process, against a baseline measured beside them, with the shipped
+configuration measured twice to expose its own repeatability:
 
-Normalising against the reference baseline measured in the same container:
+| variant, one container, 5 repeats each | tok/s |
+|---|---:|
+| reference | 37.96 |
+| **shipped `n64_k64_s1` and `n32_k64_s2`** | **109.51** |
+| `n16_k64_s1` everywhere | 100.87 |
+| shipped configuration again | 109.49 |
 
-| run | selector | reference | fused | ratio |
-|---|---|---:|---:|---:|
-| A | shipped | 38.04 | 109.71 | 2.884 |
-| B | n16_k64_s1 | 38.19 | 105.44 | 2.761 |
-| C | shipped | 38.30 | 115.31 | 3.011 |
+Within one container the same configuration reproduces to **0.02 percent**, and
+the narrow tile is **7.9 percent slower**. The revert was right, and now it is
+evidenced.
 
-The ratio still favours the shipped configuration, but on one sample each. The
-revert stands because it is the configuration with the better evidence, not
-because a regression was demonstrated.
+The isolated benchmark runs one shape in a tight loop where 256 small programs
+fill the card. A decode step issues about 104 such calls back to back, and there
+the narrower tile costs more in per-kernel scheduling than it wins in occupancy.
 
-Two lessons, and the second was learned by getting it wrong here:
+Two lessons, the second learned by getting it wrong here:
 
 1. A kernel benchmark is a hypothesis. The end to end measurement is the gate.
-2. An end to end measurement taken in a different container is also noisy.
-   Comparisons worth acting on belong in one process, against a baseline
-   measured beside them.
+2. An end to end measurement in a different container is noisy too, by about 5
+   percent, which is larger than most tuning effects. Comparisons worth acting
+   on belong in one process next to their baseline.
 
 This is why `engine/modal_decode_bench.py` loads the checkpoint once and sweeps
-every variant inside a single container rather than comparing across runs.
+every variant inside a single container rather than comparing across runs, and
+why `triton_gemv_narrow` stays registered rather than deleted.
 
 ## Known limits
 

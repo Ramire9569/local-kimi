@@ -77,7 +77,7 @@ def decode_stages() -> None:
         "+ grouped\nW4A16 GEMV",
         "+ dense\nW4A16 GEMV",
     ]
-    values = [35.76, 38.04, 61.88, 109.71]
+    values = [35.76, 38.04, 61.88, 109.51]
     colors = [BASE, ACCENT, ACCENT, ACCENT]
 
     fig, ax = plt.subplots(figsize=(7.2, 3.6))
@@ -96,8 +96,8 @@ def decode_stages() -> None:
     ax.grid(axis="y", color="#ededed", linewidth=0.8)
     ax.set_axisbelow(True)
     ax.annotate(
-        "3.07x",
-        xy=(3, 109.71),
+        "3.06x",
+        xy=(3, 109.51),
         xytext=(1.5, 122.0),
         fontsize=9,
         color=ACCENT,
@@ -306,7 +306,7 @@ def memory_headroom() -> None:
         "The speedup gave memory back",
         "An earlier version of this figure said the opposite, because it was drawn before the "
         "fused kernels existed. The GEMV path allocates no per-call partial buffers, so peak "
-        "reserved memory fell by 1.93 GiB while throughput went up 3.07x. "
+        "reserved memory fell by 1.93 GiB while throughput went up 3.06x. "
         "Source: engine/kernels/RESULTS.md",
     )
     fig.tight_layout()
