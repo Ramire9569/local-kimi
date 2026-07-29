@@ -1,0 +1,12 @@
+# Renders the "Sponsor" button at the top of the repository page.
+#
+# Only accounts with GitHub Sponsors actually enabled belong here. A username
+# listed without an active sponsor profile renders a button that leads to a
+# plain profile page, which reads as broken. Verified before adding:
+# github.com/sponsors/RightNow-AI serves a real tier page, while the personal
+# account redirects to its profile, so only the organisation is listed.
+
+github: [RightNow-AI]
+
+# Production serving for the full K3, on your own hardware.
+custom: ["https://runinfra.ai/catalog/kimi-k3-b300x8-k3turbo"]
