@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from engine.kernels.w4a16_grouped import grouped_w4a16_linear
+from engine.kernels import W4A16_GROUPED, registry
 
 from .quantized import LinearFactory, W4A16Linear, make_linear
 from .router import KLinearRouter
@@ -198,6 +198,10 @@ class KLinearMoE(nn.Module):
         self.register_buffer("grouped_w2_scales", None, persistent=False)
         self.register_buffer("grouped_w3_packed", None, persistent=False)
         self.register_buffer("grouped_w3_scales", None, persistent=False)
+        # Resolved once in prepare_grouped_w4a16. Resolving inside the decode
+        # path would re-read KIMI_KERNELS on all 78 expert calls per token,
+        # which is Python work in the hottest loop in the engine.
+        self._grouped_kernel: Callable[..., torch.Tensor] | None = None
 
     @property
     def has_grouped_w4a16(self) -> bool:
@@ -261,6 +265,8 @@ class KLinearMoE(nn.Module):
         )
         self.grouped_w3_scales = self._stack_and_release(w3_modules, "scales")
 
+        self._grouped_kernel = registry.resolve(W4A16_GROUPED)
+
         provider_weights = getattr(self.expert_provider, "_weights", None)
         if not isinstance(provider_weights, dict):
             raise TypeError("resident W4A16 provider does not expose releasable weights")
@@ -276,20 +282,24 @@ class KLinearMoE(nn.Module):
         stable_indices = shape_stable_expert_indices(
             expert_indices, self.num_experts
         )
-        gate = grouped_w4a16_linear(
+        kernel = self._grouped_kernel
+        if kernel is None:  # grouped banks built without prepare_grouped_w4a16
+            kernel = registry.resolve(W4A16_GROUPED)
+            self._grouped_kernel = kernel
+        gate = kernel(
             hidden_states,
             stable_indices,
             self.grouped_w1_packed,
             self.grouped_w1_scales,
         )
-        up = grouped_w4a16_linear(
+        up = kernel(
             hidden_states,
             stable_indices,
             self.grouped_w3_packed,
             self.grouped_w3_scales,
         )
         activated = F.silu(gate) * up
-        expert_outputs = grouped_w4a16_linear(
+        expert_outputs = kernel(
             activated.reshape(-1, self.intermediate_size),
             stable_indices.reshape(-1, 1),
             self.grouped_w2_packed,
