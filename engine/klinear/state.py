@@ -154,6 +154,34 @@ class KLinearDecodeState:
             position,
         )
 
+    def ensure_decode_capacity(self, additional_tokens: int) -> "KLinearDecodeState":
+        """Return fixed-capacity state, reusing buffers that already have room.
+
+        `reserve_decode_capacity` copies growing caches into freshly sized
+        buffers. Calling it on a state that is ALREADY fixed capacity raises a
+        shape error, because the source is a full-capacity buffer while the
+        destination is sized to tokens_seen. A restored snapshot is exactly that
+        case, so every warm request would crash without this.
+        """
+        if additional_tokens < 0:
+            raise ValueError("additional_tokens cannot be negative")
+        if not self.is_static:
+            return self.reserve_decode_capacity(additional_tokens)
+        required = self.tokens_seen + additional_tokens
+        for layer_state in self.layer_states:
+            if isinstance(layer_state, MLALayerState) and layer_state.capacity < required:
+                raise ValueError(
+                    "restored decode state has capacity "
+                    f"{layer_state.capacity}, which is short of the {required} "
+                    "tokens this request needs"
+                )
+        if self.attention_mask is not None and self.attention_mask.shape[1] < required:
+            raise ValueError(
+                "restored attention-mask capacity "
+                f"{self.attention_mask.shape[1]} is short of {required}"
+            )
+        return self
+
     def clone_static(self) -> "KLinearDecodeState":
         if not self.is_static:
             raise ValueError("clone_static requires fixed-capacity state")

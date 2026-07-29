@@ -135,3 +135,58 @@ def warm_prefill(
     )
     return state, False
 
+
+
+@torch.inference_mode()
+def cached_prefill(
+    model: Any,
+    token_ids: torch.Tensor,
+    cache: StateCache,
+    *,
+    decode_capacity: int,
+    model_fingerprint: ModelFingerprint | None = None,
+) -> tuple[Any, bool]:
+    """Prefill through the cache, returning an output that carries logits.
+
+    `warm_prefill` returns state only. On an exact hit it runs no prefill at
+    all, so there are no logits for the final prompt token, and both the
+    streaming and non-streaming generators need them to pick the first token.
+
+    So the cache is keyed on ``token_ids[:, :-1]`` and the final token is always
+    prefilled against the restored state. That is the same warm-request shape
+    BENCH-STATECACHE.py measures: restore the prefix, advance one token.
+
+    Returns ``(output, was_hit)``.
+    """
+    if token_ids.ndim != 2 or token_ids.shape[0] != 1 or token_ids.shape[1] < 2:
+        # A batch, or a prompt too short to split. The key is a single token
+        # sequence, so neither can be served from this cache.
+        return prefill(model, token_ids), False
+
+    prefix, suffix = token_ids[:, :-1], token_ids[:, -1:]
+    tokens = token_tuple(prefix)
+    fingerprint = model_fingerprint or fingerprint_model(model)
+    key = prefix_key(tokens, fingerprint)
+    # +1 for the suffix token, then room for everything the caller will generate.
+    capacity = 1 + decode_capacity
+
+    found = cache.find_longest_prefix(tokens, fingerprint)
+    if found is not None and found[1] == len(tokens):
+        target = cache.allocate_state(
+            key,
+            device=_model_device(model, token_ids),
+            additional_tokens=capacity,
+        )
+        if cache.load(key, target):
+            return prefill(model, suffix, state=target), True
+
+    output = prefill(model, prefix)
+    state = output.state.ensure_decode_capacity(capacity)
+    cache.save(
+        key,
+        state,
+        len(tokens),
+        token_ids=tokens,
+        model_fingerprint=fingerprint,
+    )
+    return prefill(model, suffix, state=state), False

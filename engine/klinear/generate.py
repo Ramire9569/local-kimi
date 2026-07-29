@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 
 from .model import KLinearModel, KLinearModelOutput
 from .state import KLinearDecodeState
+
+if TYPE_CHECKING:  # pragma: no cover
+    from engine.statecache.store import StateCache
 
 
 @dataclass
@@ -59,6 +63,32 @@ def sample_logits(
     return torch.multinomial(probabilities, num_samples=1, generator=generator).squeeze(-1)
 
 
+def _prefill_maybe_cached(
+    model: KLinearModel,
+    prompt_tokens: torch.Tensor,
+    attention_mask: torch.Tensor | None,
+    state_cache: "StateCache | None",
+    max_new_tokens: int,
+) -> KLinearModelOutput:
+    """Prefill, through the state cache when one is supplied.
+
+    A caller-supplied attention mask takes the cold path. The cache keys on the
+    token sequence alone, so a padded batch with the same tokens but a different
+    mask would collide, and snapshots record mask capacity rather than content.
+
+    The import is function-local because engine/statecache/session.py imports
+    `prefill` from this module, so a module-level import here is circular.
+    """
+    if state_cache is None or attention_mask is not None:
+        return prefill(model, prompt_tokens, attention_mask=attention_mask)
+    from engine.statecache.session import cached_prefill
+
+    output, _ = cached_prefill(
+        model, prompt_tokens, state_cache, decode_capacity=max_new_tokens
+    )
+    return output
+
+
 @torch.inference_mode()
 def prefill(
     model: KLinearModel,
@@ -94,6 +124,7 @@ def generate_tokens(
     top_p: float = 1.0,
     attention_mask: torch.Tensor | None = None,
     generator: torch.Generator | None = None,
+    state_cache: "StateCache | None" = None,
 ) -> Generator[torch.Tensor, None, KLinearGenerationTail]:
     """Yield tokens while keeping the following greedy CUDA step in flight.
 
@@ -108,7 +139,9 @@ def generate_tokens(
         raise ValueError("temperature cannot be negative")
     if not 0 < top_p <= 1:
         raise ValueError("top_p must be in (0, 1]")
-    output = prefill(model, prompt_tokens, attention_mask=attention_mask)
+    output = _prefill_maybe_cached(
+        model, prompt_tokens, attention_mask, state_cache, max_new_tokens
+    )
     if (
         max_new_tokens
         and prompt_tokens.device.type == "cuda"
@@ -131,7 +164,7 @@ def generate_tokens(
                 runner.graph_output.logits,
             )
     state = (
-        output.state.reserve_decode_capacity(max_new_tokens)
+        output.state.ensure_decode_capacity(max_new_tokens)
         if max_new_tokens
         else output.state
     )
@@ -167,7 +200,7 @@ def _eager_generate_from_prefill(
             output.logits,
             "eager",
         )
-    state = output.state.reserve_decode_capacity(max_new_tokens)
+    state = output.state.ensure_decode_capacity(max_new_tokens)
     generated_ids = prompt_tokens.new_empty(
         prompt_tokens.shape[0], max_new_tokens
     )
@@ -207,7 +240,7 @@ class CUDAGraphDecodeRunner:
         self.prefill_output = output
         self.max_new_tokens = max_new_tokens
         first_token = output.logits[:, -1].argmax(dim=-1)
-        pristine = output.state.reserve_decode_capacity(max_new_tokens)
+        pristine = output.state.ensure_decode_capacity(max_new_tokens)
 
         # Compile lazy Triton kernels and CUDA library paths before capture.
         warm_state = pristine.clone_static()
@@ -295,6 +328,7 @@ def generate(
     top_p: float = 1.0,
     attention_mask: torch.Tensor | None = None,
     generator: torch.Generator | None = None,
+    state_cache: "StateCache | None" = None,
 ) -> KLinearGenerationOutput:
     if max_new_tokens < 0:
         raise ValueError("max_new_tokens cannot be negative")
@@ -302,7 +336,9 @@ def generate(
         raise ValueError("temperature cannot be negative")
     if not 0 < top_p <= 1:
         raise ValueError("top_p must be in (0, 1]")
-    output = prefill(model, prompt_tokens, attention_mask=attention_mask)
+    output = _prefill_maybe_cached(
+        model, prompt_tokens, attention_mask, state_cache, max_new_tokens
+    )
     if (
         max_new_tokens
         and prompt_tokens.device.type == "cuda"
