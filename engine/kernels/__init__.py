@@ -15,6 +15,7 @@ from engine.kernels import registry
 
 W4A16_GROUPED = "w4a16_grouped"
 W4A16_DENSE = "w4a16_dense"
+W4A16_SWIGLU = "w4a16_swiglu"
 
 
 def _register_grouped() -> None:
@@ -123,5 +124,63 @@ def _register_dense() -> None:
     )(dense_narrow)
 
 
+def _register_swiglu() -> None:
+    """Register the gate and up projection pair plus the SwiGLU activation.
+
+    The reference runs the two grouped calls and the activation exactly as
+    engine/klinear/moe.py did before this op existed, and it dispatches through
+    whichever grouped variant is active. That matters for a fair comparison: if
+    the reference were pinned to the slow grouped kernel, the fused variant
+    would appear to win by the grouped speedup rather than by the fusion.
+
+    The grouped kernel is looked up once per process and cached against the
+    active variant name, so the reference path does not pay for resolution on
+    each of the 26 calls per token.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    cache: dict[str, object] = {}
+
+    def swiglu_reference(
+        activations: "torch.Tensor",
+        expert_indices: "torch.Tensor",
+        w1_packed: "torch.Tensor",
+        w1_scales: "torch.Tensor",
+        w3_packed: "torch.Tensor",
+        w3_scales: "torch.Tensor",
+    ) -> "torch.Tensor":
+        name = registry.active(W4A16_GROUPED)
+        kernel = cache.get(name)
+        if kernel is None:
+            kernel = registry.resolve(W4A16_GROUPED)
+            cache[name] = kernel
+        gate = kernel(activations, expert_indices, w1_packed, w1_scales)
+        up = kernel(activations, expert_indices, w3_packed, w3_scales)
+        return F.silu(gate) * up
+
+    registry.register(
+        W4A16_SWIGLU,
+        "reference",
+        reference=True,
+        requires_cuda=True,
+        description="Two grouped calls plus silu and multiply, dispatching "
+        "through the active grouped variant.",
+    )(swiglu_reference)
+
+    try:
+        from engine.kernels.w4a16_gemv import grouped_w4a16_swiglu_gemv
+    except ImportError:
+        return
+    registry.register(
+        W4A16_SWIGLU,
+        "fused",
+        requires_cuda=True,
+        description="One launch producing silu(w1 x) times w3 x, loading the "
+        "activation tile once and writing only the activated result.",
+    )(grouped_w4a16_swiglu_gemv)
+
+
 _register_grouped()
 _register_dense()
+_register_swiglu()

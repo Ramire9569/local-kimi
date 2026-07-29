@@ -8,6 +8,9 @@ The bandwidth column reports effective useful traffic. It counts packed
 weights, BF16 scales, activation reads per N tile, expert indices, outputs,
 and deterministic split-K partial writes and reads. It does not claim to
 measure memory-controller transactions or cache-line amplification.
+
+The fused SwiGLU section rotates through disjoint expert-route sets to reduce
+L2 reuse. Its timings are isolated hypotheses, not end-to-end decode results.
 """
 
 from __future__ import annotations
@@ -20,16 +23,21 @@ from pathlib import Path
 from typing import Callable
 
 import torch
+import torch.nn.functional as F
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from engine.kernels.w4a16_gemv import (  # noqa: E402
+    FUSED_SWIGLU_CONFIGS,
     GEMV_CONFIGS,
     GemvConfig,
     _launch_grouped_w4a16_gemv,
+    _launch_grouped_w4a16_swiglu_gemv,
     _select_config,
+    _select_fused_swiglu_config,
+    grouped_w4a16_gemv,
 )
 from engine.kernels.w4a16_grouped import grouped_w4a16_linear  # noqa: E402
 
@@ -39,6 +47,8 @@ ROUTES = 9
 L40S_PEAK_GBPS = 864.0
 ATOL = 0.125
 RTOL = 0.05
+SWIGLU_ATOL = 0.03125
+SWIGLU_RTOL = 0.02
 
 
 @dataclass(frozen=True)
@@ -116,12 +126,39 @@ def _measure(
     return start.elapsed_time(end) / iterations
 
 
-def _error_stats(reference: torch.Tensor, actual: torch.Tensor) -> ErrorStats:
+def _measure_indexed(
+    function: Callable[[int], torch.Tensor],
+    bank_count: int,
+    warmup: int,
+    iterations: int,
+) -> float:
+    warmup_launches = max(warmup, bank_count)
+    for index in range(warmup_launches):
+        function(index % bank_count)
+    torch.cuda.synchronize()
+
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for index in range(iterations):
+        function(index % bank_count)
+    end.record()
+    end.synchronize()
+    return start.elapsed_time(end) / iterations
+
+
+def _error_stats(
+    reference: torch.Tensor,
+    actual: torch.Tensor,
+    *,
+    atol: float = ATOL,
+    rtol: float = RTOL,
+) -> ErrorStats:
     reference_float = reference.float()
     actual_float = actual.float()
     absolute = (reference_float - actual_float).abs()
     relative = absolute / reference_float.abs().clamp_min(1e-6)
-    tolerance = ATOL + RTOL * reference_float.abs()
+    tolerance = atol + rtol * reference_float.abs()
     return ErrorStats(
         max_abs=float(absolute.max().item()),
         max_rel=float(relative.max().item()),
@@ -148,6 +185,22 @@ def _effective_bytes(
     if split_k > 1:
         partials = ROUTES * shape.output_size * split_k * 4 * 2
     return packed_weights + scales + activations + expert_indices + outputs + partials
+
+
+def _swiglu_useful_bytes(shape: ProjectionShape) -> int:
+    packed_weights = 2 * ROUTES * shape.output_size * (shape.reduction // 2)
+    scales = 2 * ROUTES * shape.output_size * (shape.reduction // 32) * 2
+    activations = TOKENS * shape.reduction * 2
+    expert_indices = TOKENS * ROUTES * 8
+    outputs = TOKENS * ROUTES * shape.output_size * 2
+    return packed_weights + scales + activations + expert_indices + outputs
+
+
+def _route_index_bank() -> torch.Tensor:
+    route_sets = EXPERTS // ROUTES
+    return torch.arange(
+        route_sets * ROUTES, device="cuda", dtype=torch.long
+    ).reshape(route_sets, TOKENS, ROUTES)
 
 
 def _timing(
@@ -247,6 +300,127 @@ def _benchmark_shape(shape: ProjectionShape, warmup: int, iterations: int) -> No
     torch.cuda.empty_cache()
 
 
+def _benchmark_fused_swiglu(
+    shape: ProjectionShape, warmup: int, iterations: int
+) -> None:
+    print()
+    print("Fused W1 plus W3 SwiGLU isolated hypothesis")
+    print(
+        f"{shape.name}: E={EXPERTS}, tokens={TOKENS}, routes={ROUTES}, "
+        f"N={shape.output_size}, K={shape.reduction}"
+    )
+    print("Do not select a config from this table without end-to-end decode.")
+
+    activations, _, w1_packed, w1_scales = _make_inputs(shape)
+    extra_activations, extra_indices, w3_packed, w3_scales = _make_inputs(shape)
+    del extra_activations, extra_indices
+    route_bank = _route_index_bank()
+    bank_count = route_bank.shape[0]
+    useful_bytes = _swiglu_useful_bytes(shape)
+
+    def current_sequence(index: int) -> torch.Tensor:
+        expert_indices = route_bank[index]
+        gate = grouped_w4a16_gemv(
+            activations, expert_indices, w1_packed, w1_scales
+        )
+        up = grouped_w4a16_gemv(
+            activations, expert_indices, w3_packed, w3_scales
+        )
+        return F.silu(gate) * up
+
+    reference = current_sequence(0)
+    reference_ms = _measure_indexed(
+        current_sequence, bank_count, warmup, iterations
+    )
+    reference_timing = _timing(
+        "current 2 GEMV + SiLU + mul",
+        reference_ms,
+        useful_bytes,
+    )
+
+    candidate_rows: list[tuple[GemvConfig, Timing, ErrorStats]] = []
+    for config in FUSED_SWIGLU_CONFIGS:
+        actual = _launch_grouped_w4a16_swiglu_gemv(
+            activations,
+            route_bank[0],
+            w1_packed,
+            w1_scales,
+            w3_packed,
+            w3_scales,
+            config,
+        )
+        repeated = _launch_grouped_w4a16_swiglu_gemv(
+            activations,
+            route_bank[0],
+            w1_packed,
+            w1_scales,
+            w3_packed,
+            w3_scales,
+            config,
+        )
+        if not torch.equal(actual, repeated):
+            raise AssertionError(f"{config.name} is not deterministic run to run")
+        errors = _error_stats(
+            reference,
+            actual,
+            atol=SWIGLU_ATOL,
+            rtol=SWIGLU_RTOL,
+        )
+        if not errors.within_tolerance:
+            raise AssertionError(
+                f"{config.name} exceeds atol={SWIGLU_ATOL} "
+                f"and rtol={SWIGLU_RTOL}: "
+                f"max_abs={errors.max_abs}, max_rel={errors.max_rel}"
+            )
+
+        milliseconds = _measure_indexed(
+            lambda index, config=config: _launch_grouped_w4a16_swiglu_gemv(
+                activations,
+                route_bank[index],
+                w1_packed,
+                w1_scales,
+                w3_packed,
+                w3_scales,
+                config,
+            ),
+            bank_count,
+            warmup,
+            iterations,
+        )
+        candidate_rows.append(
+            (config, _timing(config.name, milliseconds, useful_bytes), errors)
+        )
+
+    best_config, best_timing, best_errors = min(
+        candidate_rows, key=lambda row: row[1].milliseconds
+    )
+    default_config = _select_fused_swiglu_config()
+    default_errors = next(
+        row[2] for row in candidate_rows if row[0] == default_config
+    )
+    print(
+        f"tolerance: atol={SWIGLU_ATOL}, rtol={SWIGLU_RTOL}; "
+        f"default max abs={default_errors.max_abs:.8f}, "
+        f"default max rel={default_errors.max_rel:.8f}"
+    )
+    print(
+        f"isolated best max abs={best_errors.max_abs:.8f}, "
+        f"isolated best max rel={best_errors.max_rel:.8f}"
+    )
+    print(f"default fused config: {default_config.name}")
+    print(f"isolated best config: {best_config.name}")
+    print()
+    print("Fused candidate timings, isolated only")
+    _print_timing_table([row[1] for row in candidate_rows])
+    print()
+    print("Current sequence versus isolated best")
+    _print_timing_table([reference_timing, best_timing])
+
+    del activations, w1_packed, w1_scales, w3_packed, w3_scales
+    del route_bank, reference
+    torch.cuda.empty_cache()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--warmup", type=int, default=10)
@@ -267,6 +441,7 @@ def main() -> None:
     print("bandwidth metric: effective useful traffic, decimal GB/s")
     for shape in REAL_SHAPES:
         _benchmark_shape(shape, args.warmup, args.iterations)
+    _benchmark_fused_swiglu(REAL_SHAPES[0], args.warmup, args.iterations)
 
 
 if __name__ == "__main__":

@@ -64,7 +64,7 @@ def bench_variants(
 
     import torch
 
-    from engine.kernels import W4A16_DENSE, W4A16_GROUPED, registry
+    from engine.kernels import W4A16_DENSE, W4A16_GROUPED, W4A16_SWIGLU, registry
     from engine.klinear.generate import CUDAGraphDecodeRunner, prefill
     from engine.klinear.model import KLinearModel
     from engine.klinear.moe import KLinearMoE
@@ -112,13 +112,17 @@ def bench_variants(
         # clearing the callable cached on every module, because it is resolved
         # once at prepare time precisely so the decode loop never pays for
         # resolution.
-        grouped_name, _, dense_name = spec.partition("/")
-        dense_name = dense_name or "reference"
+        parts = spec.split("/")
+        grouped_name = parts[0]
+        dense_name = parts[1] if len(parts) > 1 and parts[1] else "reference"
+        swiglu_name = parts[2] if len(parts) > 2 and parts[2] else "reference"
 
         registry.use(W4A16_GROUPED, grouped_name)
+        registry.use(W4A16_DENSE, dense_name)
+        registry.use(W4A16_SWIGLU, swiglu_name)
         for module in moe_modules:
             module._grouped_kernel = registry.resolve(W4A16_GROUPED)
-        registry.use(W4A16_DENSE, dense_name)
+            module._swiglu_kernel = registry.resolve(W4A16_SWIGLU)
         for module in dense_modules:
             module._dense_kernel = registry.resolve(W4A16_DENSE)
         variant = spec
@@ -162,6 +166,7 @@ def bench_variants(
                 "variant": variant,
                 "active_grouped": registry.active(W4A16_GROUPED),
                 "active_dense": registry.active(W4A16_DENSE),
+                "active_swiglu": registry.active(W4A16_SWIGLU),
                 "median_ms_for_all_tokens": median_ms,
                 "ms_per_token": median_ms / new_tokens,
                 "tokens_per_second": 1000.0 * new_tokens / median_ms,

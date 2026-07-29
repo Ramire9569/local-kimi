@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from engine.kernels import W4A16_GROUPED, registry
+from engine.kernels import W4A16_GROUPED, W4A16_SWIGLU, registry
 
 from .quantized import LinearFactory, W4A16Linear, make_linear
 from .router import KLinearRouter
@@ -202,6 +202,7 @@ class KLinearMoE(nn.Module):
         # path would re-read KIMI_KERNELS on all 78 expert calls per token,
         # which is Python work in the hottest loop in the engine.
         self._grouped_kernel: Callable[..., torch.Tensor] | None = None
+        self._swiglu_kernel: Callable[..., torch.Tensor] | None = None
 
     @property
     def has_grouped_w4a16(self) -> bool:
@@ -266,6 +267,7 @@ class KLinearMoE(nn.Module):
         self.grouped_w3_scales = self._stack_and_release(w3_modules, "scales")
 
         self._grouped_kernel = registry.resolve(W4A16_GROUPED)
+        self._swiglu_kernel = registry.resolve(W4A16_SWIGLU)
 
         provider_weights = getattr(self.expert_provider, "_weights", None)
         if not isinstance(provider_weights, dict):
@@ -286,19 +288,18 @@ class KLinearMoE(nn.Module):
         if kernel is None:  # grouped banks built without prepare_grouped_w4a16
             kernel = registry.resolve(W4A16_GROUPED)
             self._grouped_kernel = kernel
-        gate = kernel(
+        swiglu = self._swiglu_kernel
+        if swiglu is None:
+            swiglu = registry.resolve(W4A16_SWIGLU)
+            self._swiglu_kernel = swiglu
+        activated = swiglu(
             hidden_states,
             stable_indices,
             self.grouped_w1_packed,
             self.grouped_w1_scales,
-        )
-        up = kernel(
-            hidden_states,
-            stable_indices,
             self.grouped_w3_packed,
             self.grouped_w3_scales,
         )
-        activated = F.silu(gate) * up
         expert_outputs = kernel(
             activated.reshape(-1, self.intermediate_size),
             stable_indices.reshape(-1, 1),
