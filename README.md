@@ -6,12 +6,12 @@
 
 Point any coding agent at a local Kimi model and it works: `k3` translates between the agent's protocol and the model's.
 
-[![Claude Code](https://img.shields.io/badge/Claude_Code-supported-D97757?logo=anthropic&logoColor=white)](docs/CLAUDE-CODE.md)
-[![Codex](https://img.shields.io/badge/Codex-supported-412991?logo=openai&logoColor=white)](docs/CODEX.md)
-[![OpenAI SDK](https://img.shields.io/badge/OpenAI_SDK-supported-412991?logo=openai&logoColor=white)](docs/OPENAI-SDK.md)
-[![Aider](https://img.shields.io/badge/Aider-supported-14B8A6)](k3/presets.py)
-[![Cline](https://img.shields.io/badge/Cline-supported-6366F1)](k3/presets.py)
-[![opencode](https://img.shields.io/badge/opencode-supported-64748B)](k3/presets.py)
+[![Claude Code](https://img.shields.io/badge/Claude_Code-verified-D97757?logo=anthropic&logoColor=white)](docs/CLAUDE-CODE.md)
+[![Codex](https://img.shields.io/badge/Codex-verified-412991)](docs/CODEX.md)
+[![Cline](https://img.shields.io/badge/Cline-verified-6366F1?logo=cline&logoColor=white)](k3/presets.py)
+[![opencode](https://img.shields.io/badge/opencode-verified-64748B?logo=opencode&logoColor=white)](k3/presets.py)
+[![Aider](https://img.shields.io/badge/Aider-verified-14B8A6)](k3/presets.py)
+[![OpenAI SDK](https://img.shields.io/badge/OpenAI_SDK-verified-412991)](docs/OPENAI-SDK.md)
 
 ```mermaid
 flowchart LR
